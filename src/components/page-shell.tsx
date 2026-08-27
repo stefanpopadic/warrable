@@ -85,9 +85,8 @@ export function PageShell({
           }`}
         >
           <header className="sticky top-0 z-10 border-b border-border bg-background/95 px-6 py-3 backdrop-blur lg:px-8">
-            <nav className="grid grid-cols-[1fr_auto_1fr] items-center">
-              <span aria-hidden="true" />
-              <Link href="/" className="justify-self-center">
+            <nav className="flex items-center justify-between gap-4">
+              <Link href="/" className="shrink-0">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src="/1milliondollartshirt-logo.png"
@@ -99,7 +98,7 @@ export function PageShell({
               <button
                 type="button"
                 onClick={openBuy}
-                className="justify-self-end bg-foreground px-5 py-2.5 font-display text-sm tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
+                className="shrink-0 bg-foreground px-5 py-2.5 font-display text-sm tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
               >
                 BUY SPACE
               </button>

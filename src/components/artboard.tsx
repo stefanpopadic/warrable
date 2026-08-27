@@ -15,13 +15,11 @@ import {
   COLS,
   ROWS,
   CELL_PX,
-  CELL_PRICE,
-  PRICE_PER_PIXEL,
-  board,
+  formatPixelPrice,
   usd,
-  brandToUrl,
-  type Block,
 } from "@/lib/artboard";
+import { MIN_PRINTED_PIXELS, amountCentsForPixels, pixelsForBudget } from "@/lib/auction";
+import type { ArtboardSnapshot } from "@/lib/artboard-data";
 
 type Sel = { x: number; y: number; w: number; h: number } | null;
 type ResizeCorner = "nw" | "ne" | "sw" | "se";
@@ -31,12 +29,230 @@ type SelectionTransform = {
   initial: NonNullable<Sel>;
 };
 
+const EMPTY_SNAPSHOT: ArtboardSnapshot = {
+  placements: [],
+  occupied: [],
+  stats: {
+    raisedCents: 0,
+    pixelsSold: 0,
+    pixelsTotal: COLS * ROWS * CELL_PX * CELL_PX,
+    currentPriceCents: 25,
+    nextPriceCents: 50,
+    pixelsUntilNextTier: 100_000,
+  },
+  leaderboard: [],
+  auctionClosed: false,
+  auctionEnd: "",
+};
+
 type Props = {
   className?: string;
   buyOpen?: boolean;
   onClose?: () => void;
   onStartDraw?: () => void;
 };
+
+type ViewMode = "bidding" | "shirt";
+
+const pct = (n: number, total: number) => `${(n / total) * 100}%`;
+
+function ArtboardGrid({
+  placements,
+  sel,
+  creative,
+  creativeFit,
+  interactive = false,
+  onStartSelectionTransform,
+}: {
+  placements: ArtboardSnapshot["placements"];
+  sel: Sel;
+  creative: string | null;
+  creativeFit: "contain" | "cover";
+  interactive?: boolean;
+  onStartSelectionTransform?: (e: PointerEvent, mode: SelectionTransform["mode"]) => void;
+}) {
+  return (
+    <>
+      {placements.map((b) => (
+        <a
+          key={b.id}
+          href={b.url}
+          target="_blank"
+          rel="noreferrer"
+          title={`${b.brand} — ${usd(b.bidCents)}`}
+          aria-label={`${b.brand}, ${usd(b.bidCents)}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute overflow-hidden ring-1 ring-white/20 hover:z-20 hover:ring-2 hover:ring-white"
+          style={{
+            left: pct(b.x, COLS),
+            top: pct(b.y, ROWS),
+            width: pct(b.w, COLS),
+            height: pct(b.h, ROWS),
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={b.creative}
+            alt={`${b.brand} creative`}
+            className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain"}`}
+          />
+        </a>
+      ))}
+
+      {sel && (
+        <div
+          className={`group absolute z-10 border-2 border-white ${
+            interactive ? "cursor-move" : "pointer-events-none"
+          } ${creative ? "bg-transparent" : "bg-white/15"}`}
+          style={{
+            left: pct(sel.x, COLS),
+            top: pct(sel.y, ROWS),
+            width: pct(sel.w, COLS),
+            height: pct(sel.h, ROWS),
+          }}
+          onPointerDown={interactive && onStartSelectionTransform ? (e) => onStartSelectionTransform(e, "move") : undefined}
+        >
+          {creative && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={creative}
+              alt="Your creative preview"
+              className={`pointer-events-none h-full w-full ${
+                creativeFit === "cover" ? "object-cover" : "object-contain"
+              }`}
+            />
+          )}
+          {interactive &&
+            onStartSelectionTransform &&
+            (
+              [
+                ["nw", "-left-2 -top-2 cursor-nwse-resize", "Resize from top left"],
+                ["ne", "-right-2 -top-2 cursor-nesw-resize", "Resize from top right"],
+                ["sw", "-bottom-2 -left-2 cursor-nesw-resize", "Resize from bottom left"],
+                ["se", "-bottom-2 -right-2 cursor-nwse-resize", "Resize from bottom right"],
+              ] as const
+            ).map(([corner, position, label]) => (
+              <button
+                key={corner}
+                type="button"
+                aria-label={label}
+                onPointerDown={(e) => onStartSelectionTransform(e, corner)}
+                className={`absolute z-20 h-4 w-4 rounded-full border-2 border-black bg-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${position}`}
+              />
+            ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function TShirtPreview({
+  placements,
+  sel,
+  creative,
+  creativeFit,
+}: {
+  placements: ArtboardSnapshot["placements"];
+  sel: Sel;
+  creative: string | null;
+  creativeFit: "contain" | "cover";
+}) {
+  return (
+    <div className="flex h-full w-full items-center justify-center overflow-auto p-6 pb-20">
+      <div className="relative w-[min(100%,380px)]">
+        <svg
+          viewBox="0 0 320 420"
+          aria-hidden="true"
+          className="w-full drop-shadow-[0_24px_48px_rgba(0,0,0,0.55)]"
+        >
+          <path
+            d="M72 36 Q160 18 248 36 L320 88 L296 132 L272 132 L272 392 L48 392 L48 132 L24 132 L0 88 Z"
+            fill="#121212"
+            stroke="#2a2a2a"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M112 38 Q160 58 208 38 Q160 72 112 38"
+            fill="#080808"
+            stroke="#1f1f1f"
+            strokeWidth="1"
+          />
+          <path
+            d="M48 132 L24 132 L0 88 L24 68 L48 88 Z"
+            fill="#0e0e0e"
+            stroke="#222"
+            strokeWidth="1"
+          />
+          <path
+            d="M272 132 L296 132 L320 88 L296 68 L272 88 Z"
+            fill="#0e0e0e"
+            stroke="#222"
+            strokeWidth="1"
+          />
+        </svg>
+
+        <div
+          className="absolute overflow-hidden bg-[#0b0b0b] ring-1 ring-white/10"
+          style={{
+            left: "18%",
+            top: "calc(17% + 10px)",
+            width: "63%",
+            aspectRatio: `${COLS} / ${ROWS}`,
+          }}
+        >
+          <div className="relative h-full w-full">
+            <ArtboardGrid
+              placements={placements}
+              sel={sel}
+              creative={creative}
+              creativeFit={creativeFit}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ViewTabs({
+  viewMode,
+  onChange,
+}: {
+  viewMode: ViewMode;
+  onChange: (mode: ViewMode) => void;
+}) {
+  const tabs: { id: ViewMode; label: string }[] = [
+    { id: "bidding", label: "Bidding area" },
+    { id: "shirt", label: "T-shirt" },
+  ];
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-4 z-30 flex justify-center px-4">
+      <div
+        role="tablist"
+        aria-label="Artboard view"
+        className="pointer-events-auto flex items-center gap-1 rounded border border-border/50 bg-black/85 p-1 backdrop-blur"
+      >
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={viewMode === tab.id}
+            onClick={() => onChange(tab.id)}
+            className={`h-10 px-4 font-condensed text-xs uppercase tracking-widest transition-colors ${
+              viewMode === tab.id
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 
@@ -59,9 +275,10 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const selectionTransform = useRef<SelectionTransform | null>(null);
   const [creative, setCreative] = useState<string | null>(null);
+  const [creativeFile, setCreativeFile] = useState<File | null>(null);
   const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("contain");
   const [creativeAspect, setCreativeAspect] = useState(1);
-  const [placed, setPlaced] = useState<Block[]>([]);
+  const [snapshot, setSnapshot] = useState<ArtboardSnapshot>(EMPTY_SNAPSHOT);
   const [brand, setBrand] = useState("");
   const [url, setUrl] = useState("");
   const [hint, setHint] = useState<string | null>(null);
@@ -75,9 +292,44 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
   const pinch = useRef<{ dist: number; zoom: number } | null>(null);
   const [base, setBase] = useState<{ w: number; h: number } | null>(null);
   const [buyStep, setBuyStep] = useState<1 | 2>(1);
-  const [amount, setAmount] = useState("2200");
-  const [pixels, setPixels] = useState("1000");
+  const [amount, setAmount] = useState("25");
+  const [pixels, setPixels] = useState(String(MIN_PRINTED_PIXELS));
   const [autoNote, setAutoNote] = useState<string | null>(null);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("bidding");
+
+  const loadSnapshot = useCallback(async () => {
+    const response = await fetch("/api/artboard", { cache: "no-store" });
+    if (!response.ok) throw new Error("Artboard availability could not be refreshed.");
+    const data = (await response.json()) as ArtboardSnapshot;
+    setSnapshot(data);
+    return data;
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        if (active) await loadSnapshot();
+      } catch (error) {
+        if (active) setHint(error instanceof Error ? error.message : "Artboard is unavailable.");
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(refresh, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [loadSnapshot]);
+
+  useEffect(
+    () => () => {
+      if (creative?.startsWith("blob:")) URL.revokeObjectURL(creative);
+    },
+    [creative],
+  );
 
   useEffect(() => {
     const vp = viewportRef.current;
@@ -112,21 +364,25 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
     if (buyOpen) {
       setBuyStep(1);
       setAutoNote(null);
+      void loadSnapshot().catch(() => undefined);
     }
-  }, [buyOpen]);
+  }, [buyOpen, loadSnapshot]);
 
   const occupied = useCallback(
     (x: number, y: number, w: number, h: number) => {
       if (x < 0 || y < 0 || x + w > COLS || y + h > ROWS) return true;
       for (let j = y; j < y + h; j++)
         for (let i = x; i < x + w; i++) {
-          if (board.grid[j * COLS + i]) return true;
-          if (placed.some((p) => i >= p.x && i < p.x + p.w && j >= p.y && j < p.y + p.h))
+          if (
+            snapshot.occupied.some(
+              (p) => i >= p.x && i < p.x + p.w && j >= p.y && j < p.y + p.h,
+            )
+          )
             return true;
         }
       return false;
     },
-    [placed],
+    [snapshot.occupied],
   );
 
   const cellFrom = (e: { clientX: number; clientY: number }) => {
@@ -379,7 +635,7 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
 
   const cells = sel ? sel.w * sel.h : 0;
   const selPixels = cells * CELL_PX * CELL_PX;
-  const price = cells * CELL_PRICE;
+  const priceCents = amountCentsForPixels(selPixels, snapshot.stats.pixelsSold);
 
   const findFree = useCallback(
     (targetCells: number) => {
@@ -413,195 +669,139 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
   const syncFromAmount = (v: string) => {
     setAmount(v);
     const dollars = Number(v.replace(/[^0-9.]/g, "")) || 0;
-    setPixels(String(Math.max(0, Math.round(dollars / PRICE_PER_PIXEL))));
+    setPixels(
+      String(pixelsForBudget(Math.round(dollars * 100), snapshot.stats.pixelsSold)),
+    );
   };
 
   const syncFromPixels = (v: string) => {
     setPixels(v);
     const px = Number(v.replace(/[^0-9.]/g, "")) || 0;
-    setAmount(String(Math.round(px * PRICE_PER_PIXEL)));
+    setAmount(String(Math.round(amountCentsForPixels(px, snapshot.stats.pixelsSold) / 100)));
   };
 
-  const placeBid = () => {
-    if (!sel) return;
-    const brandName = brand || "YOUR BRAND";
-    const bidUrl = url.trim() || brandToUrl(brandName);
-    setPlaced((p) => [
-      ...p,
-      {
-        id: `you${p.length}`,
-        ...sel,
-        brand: brandName,
-        url: bidUrl,
-        creative: creative ?? undefined,
-        creativeFit,
-        bg: "transparent",
-        fg: "#000000",
-        bid: price,
-      },
-    ]);
-    setSel(null);
-    setCreative(null);
-    setCreativeFit("contain");
-    setCreativeAspect(1);
-    setBrand("");
-    setUrl("");
-    setBuyStep(1);
-    setHint(`Bid placed: ${usd(price)} for ${selPixels.toLocaleString()} px.`);
-    onClose?.();
+  const placeBid = async () => {
+    if (!sel || !creativeFile || !termsAccepted || checkoutLoading) return;
+
+    setCheckoutLoading(true);
+    setHint(null);
+    const formData = new FormData();
+    formData.set("brand", brand.trim());
+    formData.set("website", url.trim());
+    formData.set("creativeFit", creativeFit);
+    formData.set("x", String(sel.x));
+    formData.set("y", String(sel.y));
+    formData.set("w", String(sel.w));
+    formData.set("h", String(sel.h));
+    formData.set("termsAccepted", "true");
+    formData.set("creative", creativeFile);
+
+    try {
+      const response = await fetch("/api/checkout", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json()) as { checkoutUrl?: string; error?: string };
+
+      if (!response.ok || !result.checkoutUrl) {
+        if (response.status === 409) {
+          await loadSnapshot().catch(() => undefined);
+        }
+        setHint(result.error ?? "Checkout could not be started.");
+        return;
+      }
+
+      window.location.assign(result.checkoutUrl);
+    } catch {
+      setHint("Checkout could not be reached. Check your connection and try again.");
+    } finally {
+      setCheckoutLoading(false);
+    }
   };
 
-  const pct = (n: number, total: number) => `${(n / total) * 100}%`;
-  const cursor = panning ? "cursor-grabbing" : spaceDown ? "cursor-grab" : "cursor-crosshair";
+  const cursor =
+    viewMode === "shirt"
+      ? "cursor-default"
+      : panning
+        ? "cursor-grabbing"
+        : spaceDown
+          ? "cursor-grab"
+          : "cursor-crosshair";
   const previewPx = Math.max(0, Math.round(Number(pixels) || 0));
   const previewRect = planRect(Math.max(1, previewPx / (CELL_PX * CELL_PX)));
   const previewW = previewRect.w * CELL_PX;
   const previewH = previewRect.h * CELL_PX;
-  const identityReady = Boolean(creative && brand.trim() && url.trim());
+  const identityReady = Boolean(creativeFile && brand.trim() && url.trim());
+  const checkoutDisabled = !termsAccepted || checkoutLoading || snapshot.auctionClosed;
 
   return (
     <div className={`relative h-full w-full overflow-hidden bg-black ${className}`}>
-      <div
-        ref={viewportRef}
-        className={`no-scrollbar absolute inset-0 touch-none overflow-auto ${
-          buyOpen ? "pr-80 lg:pr-96" : ""
-        } ${cursor}`}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endPointer}
-        onPointerCancel={endPointer}
-      >
+      <ViewTabs viewMode={viewMode} onChange={setViewMode} />
+
+      {viewMode === "bidding" ? (
         <div
-          ref={ref}
-          className="relative m-auto touch-none select-none bg-[#0b0b0b]"
-          style={{
-            width: base ? `${base.w * zoom}px` : "100%",
-            height: base ? `${base.h * zoom}px` : "auto",
-            aspectRatio: base ? undefined : `${COLS} / ${ROWS}`,
-            flex: "0 0 auto",
-          }}
+          ref={viewportRef}
+          className={`no-scrollbar absolute inset-0 touch-none overflow-auto pt-14 ${
+            buyOpen ? "pr-80 lg:pr-96" : ""
+          } ${cursor}`}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endPointer}
+          onPointerCancel={endPointer}
         >
-          {board.blocks.map((b) => (
-            <a
-              key={b.id}
-              href={b.url}
-              target="_blank"
-              rel="noreferrer"
-              title={`${b.brand} — ${usd(b.bid)}`}
-              aria-label={`${b.brand}, ${usd(b.bid)}`}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="absolute overflow-hidden hover:z-20 hover:ring-2 hover:ring-white"
-              style={{
-                left: pct(b.x, COLS),
-                top: pct(b.y, ROWS),
-                width: pct(b.w, COLS),
-                height: pct(b.h, ROWS),
-                background: b.bg,
-                color: b.fg,
-              }}
-            >
-              {b.logo && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={b.logo}
-                  alt={`${b.brand} logo`}
-                  className="h-full w-full object-contain p-[14%]"
-                />
-              )}
-            </a>
-          ))}
-
-          {placed.map((b) => (
-            <a
-              key={b.id}
-              href={b.url}
-              target="_blank"
-              rel="noreferrer"
-              title={`${b.brand} — ${usd(b.bid)}`}
-              aria-label={`${b.brand}, ${usd(b.bid)}`}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="absolute overflow-hidden ring-1 ring-white hover:z-20 hover:ring-2"
-              style={{
-                left: pct(b.x, COLS),
-                top: pct(b.y, ROWS),
-                width: pct(b.w, COLS),
-                height: pct(b.h, ROWS),
-                background: b.bg,
-              }}
-            >
-              {b.creative && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={b.creative}
-                  alt={`${b.brand} creative`}
-                  className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain"}`}
-                />
-              )}
-            </a>
-          ))}
-
-          {sel && (
-            <div
-              className={`group absolute z-10 cursor-move border-2 border-white ${
-                creative ? "bg-transparent" : "bg-white/15"
-              }`}
-              style={{
-                left: pct(sel.x, COLS),
-                top: pct(sel.y, ROWS),
-                width: pct(sel.w, COLS),
-                height: pct(sel.h, ROWS),
-              }}
-              onPointerDown={(e) => startSelectionTransform(e, "move")}
-            >
-              {creative && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={creative}
-                  alt="Your creative preview"
-                  className={`pointer-events-none h-full w-full ${
-                    creativeFit === "cover" ? "object-cover" : "object-contain"
-                  }`}
-                />
-              )}
-              {(
-                [
-                  ["nw", "-left-2 -top-2 cursor-nwse-resize", "Resize from top left"],
-                  ["ne", "-right-2 -top-2 cursor-nesw-resize", "Resize from top right"],
-                  ["sw", "-bottom-2 -left-2 cursor-nesw-resize", "Resize from bottom left"],
-                  ["se", "-bottom-2 -right-2 cursor-nwse-resize", "Resize from bottom right"],
-                ] as const
-              ).map(([corner, position, label]) => (
-                <button
-                  key={corner}
-                  type="button"
-                  aria-label={label}
-                  onPointerDown={(e) => startSelectionTransform(e, corner)}
-                  className={`absolute z-20 h-4 w-4 rounded-full border-2 border-black bg-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${position}`}
-                />
-              ))}
-            </div>
-          )}
+          <div
+            ref={ref}
+            className="relative m-auto touch-none select-none bg-[#0b0b0b]"
+            style={{
+              width: base ? `${base.w * zoom}px` : "100%",
+              height: base ? `${base.h * zoom}px` : "auto",
+              aspectRatio: base ? undefined : `${COLS} / ${ROWS}`,
+              flex: "0 0 auto",
+            }}
+          >
+            <ArtboardGrid
+              placements={snapshot.placements}
+              sel={sel}
+              creative={creative}
+              creativeFit={creativeFit}
+              interactive
+              onStartSelectionTransform={startSelectionTransform}
+            />
+          </div>
         </div>
-      </div>
-
-      <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex items-center justify-center">
-        <div className="pointer-events-auto flex items-center gap-2 rounded border border-border/50 bg-black/85 p-2 backdrop-blur">
-          {([1, 2, 5] as const).map((z) => (
-            <button
-              key={z}
-              onClick={() => setZoom(z)}
-              className={`h-11 border px-3.5 font-condensed text-sm uppercase leading-none ${
-                Math.abs(zoom - z) < 0.05
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground"
-              }`}
-              aria-label={`Zoom ${z}x`}
-            >
-              {z}×
-            </button>
-          ))}
+      ) : (
+        <div
+          className={`absolute inset-0 overflow-hidden pt-14 ${buyOpen ? "pr-80 lg:pr-96" : ""}`}
+        >
+          <TShirtPreview
+            placements={snapshot.placements}
+            sel={sel}
+            creative={creative}
+            creativeFit={creativeFit}
+          />
         </div>
-      </div>
+      )}
+
+      {viewMode === "bidding" && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex items-center justify-center">
+          <div className="pointer-events-auto flex items-center gap-2 rounded border border-border/50 bg-black/85 p-2 backdrop-blur">
+            {([1, 2, 5] as const).map((z) => (
+              <button
+                key={z}
+                onClick={() => setZoom(z)}
+                className={`h-11 border px-3.5 font-condensed text-sm uppercase leading-none ${
+                  Math.abs(zoom - z) < 0.05
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground"
+                }`}
+                aria-label={`Zoom ${z}x`}
+              >
+                {z}×
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div
         className={`absolute right-0 top-0 bottom-0 z-40 w-80 overflow-y-auto border-l border-border bg-card/95 backdrop-blur transition-[translate] duration-500 ease-out lg:w-96 ${
@@ -612,7 +812,11 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
           <div>
             <p className="font-display text-lg tracking-wide">BUY SPACE ON THE SHIRT</p>
             <p className="mt-0.5 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-              $2.20 / pixel · $220 minimum
+              {formatPixelPrice(snapshot.stats.currentPriceCents)} / pixel ·{" "}
+              {formatPixelPrice(MIN_PRINTED_PIXELS * snapshot.stats.currentPriceCents)} minimum
+              {snapshot.stats.nextPriceCents
+                ? ` · next ${formatPixelPrice(snapshot.stats.nextPriceCents)}`
+                : ""}
             </p>
           </div>
           <button
@@ -648,11 +852,16 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
                 </span>
                 <input
                   type="file"
-                  accept="image/*"
+                    accept="image/png,image/jpeg,image/webp"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
+                      if (file.size > 4 * 1024 * 1024) {
+                        setHint("Image must be 4 MB or smaller.");
+                        e.currentTarget.value = "";
+                        return;
+                      }
                     const objectUrl = URL.createObjectURL(file);
                     const image = new window.Image();
                     image.onload = () => {
@@ -662,7 +871,10 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
                     };
                     image.src = objectUrl;
                     setCreativeFit(file.type === "image/jpeg" ? "cover" : "contain");
+                      setCreativeFile(file);
                     setCreative(objectUrl);
+                      setTermsAccepted(false);
+                      setHint(null);
                   }}
                 />
               </label>
@@ -754,7 +966,9 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
                           {previewW}×{previewH} px
                         </p>
                       </div>
-                      <p className="font-display text-xl leading-none">{usd(previewPx * PRICE_PER_PIXEL)}</p>
+                      <p className="font-display text-xl leading-none">
+                        {usd(amountCentsForPixels(previewPx, snapshot.stats.pixelsSold))}
+                      </p>
                     </div>
                   </div>
 
@@ -794,7 +1008,7 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
                       <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
                         Your bid
                       </p>
-                      <p className="mt-1 font-display text-2xl leading-none">{usd(price)}</p>
+                      <p className="mt-1 font-display text-2xl leading-none">{usd(priceCents)}</p>
                     </div>
                   </div>
 
@@ -847,14 +1061,32 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
                     </div>
                   </div>
 
-                  {hint && <p className="mt-3 font-condensed text-xs text-muted-foreground">{hint}</p>}
+                  <label className="mt-4 flex cursor-pointer items-start gap-2 border-t border-border pt-4 font-condensed text-xs leading-snug text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={termsAccepted}
+                      onChange={(event) => setTermsAccepted(event.target.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent-yellow)]"
+                    />
+                    <span>
+                      I understand this purchase is final and non-refundable once payment is
+                      confirmed.
+                    </span>
+                  </label>
+
+                  {hint && <p className="mt-3 font-condensed text-xs text-foreground">{hint}</p>}
 
                   <button
                     type="button"
-                    onClick={placeBid}
-                    className="mt-5 h-14 w-full bg-foreground px-5 font-display text-lg tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
+                    onClick={() => void placeBid()}
+                    disabled={checkoutDisabled}
+                    className="mt-4 h-14 w-full bg-foreground px-5 font-display text-lg tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
                   >
-                    PLACE BID · {usd(price)}
+                    {snapshot.auctionClosed
+                      ? "AUCTION CLOSED"
+                      : checkoutLoading
+                        ? "RESERVING…"
+                        : `RESERVE & PAY · ${usd(priceCents)}`}
                   </button>
                   <button
                     type="button"

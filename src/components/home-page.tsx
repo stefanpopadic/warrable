@@ -3,9 +3,25 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { BuyButton, PageShell } from "@/components/page-shell";
-import { leaderboard, stats, usd } from "@/lib/artboard";
+import { usd, formatPixelPrice } from "@/lib/artboard";
+import { AUCTION_END, CELL_PX, COLS, ROWS } from "@/lib/auction";
+import type { ArtboardSnapshot, LeaderboardEntry } from "@/lib/artboard-data";
 
-const AUCTION_END = Date.UTC(2026, 8, 10, 8, 0, 0);
+const EMPTY_SNAPSHOT: ArtboardSnapshot = {
+  placements: [],
+  occupied: [],
+  stats: {
+    raisedCents: 0,
+    pixelsSold: 0,
+    pixelsTotal: COLS * ROWS * CELL_PX * CELL_PX,
+    currentPriceCents: 25,
+    nextPriceCents: 50,
+    pixelsUntilNextTier: 100_000,
+  },
+  leaderboard: [],
+  auctionClosed: false,
+  auctionEnd: new Date(AUCTION_END).toISOString(),
+};
 
 function Countdown() {
   const [left, setLeft] = useState<number | null>(null);
@@ -62,7 +78,7 @@ function Countdown() {
   );
 }
 
-function LeaderboardTable() {
+function LeaderboardTable({ leaderboard }: { leaderboard: LeaderboardEntry[] }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? leaderboard : leaderboard.slice(0, 10);
   return (
@@ -136,7 +152,9 @@ function LeaderboardTable() {
                       Top {String(r.rank).padStart(2, "0")}
                     </span>
                   )}
-                  <span className="font-display text-lg leading-none sm:text-xl">{usd(r.bid)}</span>
+                  <span className="font-display text-lg leading-none sm:text-xl">
+                    {usd(r.bidCents)}
+                  </span>
                 </div>
                 <span
                   className={`mt-1 font-condensed text-xs leading-none ${
@@ -257,7 +275,7 @@ const SHIRTS: Shirt[] = [
   },
 ];
 
-function ExpensiveShirts() {
+function ExpensiveShirts({ raisedCents }: { raisedCents: number }) {
   const [activeShirt, setActiveShirt] = useState<Shirt | null>(null);
   const [portalReady, setPortalReady] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -290,12 +308,12 @@ function ExpensiveShirts() {
   ranked.push({
     name: "MILLION DOLLAR T-SHIRT",
     year: "",
-    price: usd(stats.raised),
+    price: usd(raisedCents),
     note: "Current total value of all sold shirt space",
     image: "/shirts/1milliondollartshirt.jpg",
     imageAlt: "Million Dollar T-Shirt covered with sponsor artwork",
     source: "",
-    value: stats.raised,
+    value: raisedCents / 100,
     isMdt: true,
   });
   ranked.sort((a, b) => b.value - a.value);
@@ -394,19 +412,19 @@ function ExpensiveShirts() {
 const FRIENDLY_QUESTIONS: [string, string][] = [
   [
     "How does the pricing work?",
-    "Space is priced per printed pixel — $2.20 per pixel, 100 pixels ($220) minimum. Drag a bigger area, pay more, get more of the shirt.",
+    "Pricing starts at $0.25 per printed pixel and doubles every 100,000 pixels sold. Large purchases are split across tiers automatically. Minimum purchase is 100 pixels.",
   ],
   [
-    "Can I increase my bid later?",
-    "Yes. You can top up to expand your area into adjacent free space, or outbid for a more central placement while the auction is open.",
+    "Can another buyer outbid my placement?",
+    "No. Version one sells only free space. Once Dodo confirms your payment, that placement is yours and cannot be displaced.",
   ],
   [
     "What artwork should I upload?",
-    "A square or rectangular PNG/JPG logo at least 2x the pixel size of your area. We fit it to your exact region — no text smaller than legible print.",
+    "A square or rectangular PNG, JPG or WebP logo up to 4 MB. Transparent PNGs stay transparent; photographs fill the selected region.",
   ],
   [
     "When do I pay?",
-    "At bid time. All bids are final and non-refundable, even if another bidder outbids your placement before the auction closes.",
+    "At checkout. Dodo reserves your space for 30 minutes, and the logo goes live only after payment is confirmed. Completed purchases are final and non-refundable.",
   ],
   [
     "What happens when the auction closes?",
@@ -420,11 +438,34 @@ const FRIENDLY_QUESTIONS: [string, string][] = [
 
 function HomeContent() {
   const leftPanelRef = useRef<HTMLDivElement>(null);
+  const [snapshot, setSnapshot] = useState<ArtboardSnapshot>(EMPTY_SNAPSHOT);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/artboard", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = (await response.json()) as ArtboardSnapshot;
+        if (active) setSnapshot(data);
+      } catch {
+        // Keep the last known public snapshot during transient failures.
+      }
+    };
+    void load();
+    const interval = window.setInterval(load, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const { stats, leaderboard } = snapshot;
 
   return (
     <PageShell leftRef={leftPanelRef}>
       <section id="top" className="border-b border-border px-6 py-6 lg:px-8 lg:py-8">
-        <div className="mx-auto max-w-3xl text-left">
+        <div className="mx-auto mt-5 max-w-3xl text-left">
           <h1 className="text-center font-display text-[clamp(2.6rem,6vw,5rem)] leading-[0.95] tracking-tight">
             THE WORLD&apos;S
             <br />
@@ -441,22 +482,31 @@ function HomeContent() {
             <div className="w-full text-center">
               <Countdown />
             </div>
-            {stats.brands > 0 && (
+            {!snapshot.auctionClosed && (
               <BuyButton className="mt-8 bg-foreground px-7 py-3 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground" />
             )}
           </div>
 
           <dl className="mt-8 grid grid-cols-3 border-y border-border">
             {[
-              ["Total raised", usd(stats.raised)],
-              ["Brands", String(stats.brands)],
-              ["Pixels sold", stats.pixelsSold.toLocaleString()],
-            ].map(([k, v]) => (
+              ["Total raised", usd(stats.raisedCents), null],
+              [
+                "Cost per px",
+                formatPixelPrice(stats.currentPriceCents),
+                stats.nextPriceCents ? `next ${formatPixelPrice(stats.nextPriceCents)}` : null,
+              ],
+              ["Pixels sold", stats.pixelsSold.toLocaleString(), null],
+            ].map(([k, v, sub]) => (
               <div key={k} className="border-r border-border py-4 text-center last:border-r-0">
                 <dt className="mb-[5px] font-condensed text-xs uppercase tracking-widest text-muted-foreground">
                   {k}
                 </dt>
                 <dd className="mt-1 font-display text-2xl leading-none">{v}</dd>
+                {sub ? (
+                  <dd className="mt-1 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                    {sub}
+                  </dd>
+                ) : null}
               </div>
             ))}
           </dl>
@@ -481,7 +531,7 @@ function HomeContent() {
                 </div>
               </div>
             ) : (
-              <LeaderboardTable />
+              <LeaderboardTable leaderboard={leaderboard} />
             )}
           </div>
         </div>
@@ -498,9 +548,9 @@ function HomeContent() {
           </h2>
           <p className="mt-4 max-w-2xl leading-relaxed text-muted-foreground">
             Documented prices only. Million Dollar T-Shirt enters the ranking at the total value of all space
-            sold — currently {usd(stats.raised)}. Target: $1,000,000.
+            sold — currently {usd(stats.raisedCents)}. Target: $1,000,000.
           </p>
-          <ExpensiveShirts />
+          <ExpensiveShirts raisedCents={stats.raisedCents} />
         </div>
       </section>
 
