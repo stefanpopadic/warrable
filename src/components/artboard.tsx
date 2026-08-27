@@ -687,7 +687,12 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
     setHint(null);
     const formData = new FormData();
     formData.set("brand", brand.trim());
-    formData.set("website", url.trim());
+    const website = url.trim();
+    const websiteWithProtocol =
+      website.startsWith("http://") || website.startsWith("https://")
+        ? website
+        : `https://${website}`;
+    formData.set("website", websiteWithProtocol);
     formData.set("creativeFit", creativeFit);
     formData.set("x", String(sel.x));
     formData.set("y", String(sel.y));

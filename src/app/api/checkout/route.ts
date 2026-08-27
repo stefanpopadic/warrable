@@ -107,9 +107,15 @@ export async function POST(request: Request) {
       message.includes("Image must") ||
       message.includes("valid PNG") ||
       message.includes("Website") ||
+      message.includes("Invalid URL") ||
       message.includes("outside the artboard")
     ) {
-      return apiError(message, 400);
+      return apiError(
+        message.includes("Invalid URL")
+          ? "Enter a valid website URL (e.g. https://yourbrand.com)."
+          : message,
+        400,
+      );
     }
     if (message.includes("placement_overlap")) {
       return apiError("That space was just reserved. Choose another position.", 409);

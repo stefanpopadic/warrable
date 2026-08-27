@@ -25,7 +25,12 @@ const checkoutFields = z.object({
 });
 
 function normalizeWebsite(value: string) {
-  const url = new URL(value);
+  const trimmed = value.trim();
+  const withProtocol =
+    trimmed.startsWith("http://") || trimmed.startsWith("https://")
+      ? trimmed
+      : `https://${trimmed}`;
+  const url = new URL(withProtocol);
   if (!["http:", "https:"].includes(url.protocol)) {
     throw new Error("Website must use http or https.");
   }
