@@ -22,12 +22,12 @@ export const metadata: Metadata = {
     template: "%s — Million Dollar T-Shirt",
   },
   description:
-    "Every pixel is an auction. Buy space on a real shirt, get your brand seen, and become part of internet history.",
+    "Every pixel is an auction. Buy space on a real shirt, promote your brand, and become part of internet history.",
   authors: [{ name: "Million Dollar T-Shirt" }],
   openGraph: {
     title: "Million Dollar T-Shirt",
     description:
-      "Every pixel is an auction. Buy space on a real shirt, get your brand seen, and become part of internet history.",
+      "Every pixel is an auction. Buy space on a real shirt, promote your brand, and become part of internet history.",
     type: "website",
   },
   twitter: {

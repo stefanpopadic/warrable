@@ -473,7 +473,7 @@ function HomeContent({
             T-SHIRT.
           </h1>
           <p className="mx-auto mt-5 max-w-md text-center text-lg text-muted-foreground">
-            Every pixel is an auction. Buy space on a real shirt, get your brand seen, and become part of
+            Every pixel is an auction. Buy space on a real shirt, promote your brand, and become part of
             internet history.
           </p>
 
