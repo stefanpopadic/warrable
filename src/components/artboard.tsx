@@ -145,7 +145,7 @@ function TShirtPreview({
   creativeFit: "contain" | "cover";
 }) {
   return (
-    <div className="flex h-full w-full items-center justify-center overflow-auto p-6 pb-20">
+    <div className="flex h-full w-full items-center justify-center overflow-auto px-6 py-16">
       <div className="relative w-[min(100%,380px)]">
         <svg
           viewBox="0 0 320 420"
@@ -209,8 +209,8 @@ function ViewTabs({
   onChange: (mode: ViewMode) => void;
 }) {
   const tabs: { id: ViewMode; label: string }[] = [
-    { id: "bidding", label: "Bidding area" },
-    { id: "shirt", label: "T-shirt" },
+    { id: "bidding", label: "Artboard" },
+    { id: "shirt", label: "Shirt" },
   ];
 
   return (
@@ -218,7 +218,7 @@ function ViewTabs({
       <div
         role="tablist"
         aria-label="Artboard view"
-        className="pointer-events-auto flex items-center gap-1 rounded border border-border/50 bg-black/85 p-1 backdrop-blur"
+        className="pointer-events-auto inline-flex items-stretch gap-1 rounded border border-border/50 bg-black/85 p-1 backdrop-blur"
       >
         {tabs.map((tab) => (
           <button
@@ -227,7 +227,7 @@ function ViewTabs({
             role="tab"
             aria-selected={viewMode === tab.id}
             onClick={() => onChange(tab.id)}
-            className={`h-10 px-4 font-condensed text-xs uppercase tracking-widest transition-colors ${
+            className={`inline-flex h-10 min-w-[5.5rem] items-center justify-center px-4 font-condensed text-xs uppercase leading-none tracking-widest transition-colors ${
               viewMode === tab.id
                 ? "bg-foreground text-background"
                 : "text-muted-foreground hover:bg-secondary hover:text-foreground"
@@ -740,7 +740,7 @@ export default function Artboard({
       {viewMode === "bidding" ? (
         <div
           ref={viewportRef}
-          className={`no-scrollbar absolute inset-0 touch-none overflow-auto pt-14 ${
+          className={`no-scrollbar absolute inset-0 touch-none overflow-auto ${
             buyOpen ? "pr-80 lg:pr-96" : ""
           } ${cursor}`}
           onPointerDown={onPointerDown}
@@ -748,29 +748,30 @@ export default function Artboard({
           onPointerUp={endPointer}
           onPointerCancel={endPointer}
         >
-          <div
-            ref={ref}
-            className="relative m-auto touch-none select-none bg-[#0b0b0b]"
-            style={{
-              width: base ? `${base.w * zoom}px` : "100%",
-              height: base ? `${base.h * zoom}px` : "auto",
-              aspectRatio: base ? undefined : `${COLS} / ${ROWS}`,
-              flex: "0 0 auto",
-            }}
-          >
-            <ArtboardGrid
-              placements={snapshot.placements}
-              sel={sel}
-              creative={creative}
-              creativeFit={creativeFit}
-              interactive
-              onStartSelectionTransform={startSelectionTransform}
-            />
+          <div className="flex min-h-full min-w-full items-center justify-center px-4 py-16">
+            <div
+              ref={ref}
+              className="relative shrink-0 touch-none select-none bg-[#0b0b0b]"
+              style={{
+                width: base ? `${base.w * zoom}px` : "100%",
+                height: base ? `${base.h * zoom}px` : "auto",
+                aspectRatio: base ? undefined : `${COLS} / ${ROWS}`,
+              }}
+            >
+              <ArtboardGrid
+                placements={snapshot.placements}
+                sel={sel}
+                creative={creative}
+                creativeFit={creativeFit}
+                interactive
+                onStartSelectionTransform={startSelectionTransform}
+              />
+            </div>
           </div>
         </div>
       ) : (
         <div
-          className={`absolute inset-0 overflow-hidden pt-14 ${buyOpen ? "pr-80 lg:pr-96" : ""}`}
+          className={`absolute inset-0 overflow-hidden ${buyOpen ? "pr-80 lg:pr-96" : ""}`}
         >
           <TShirtPreview
             placements={snapshot.placements}
@@ -788,7 +789,7 @@ export default function Artboard({
               <button
                 key={z}
                 onClick={() => setZoom(z)}
-                className={`h-11 border px-3.5 font-condensed text-sm uppercase leading-none ${
+                className={`inline-flex h-11 min-w-[2.75rem] items-center justify-center border px-3.5 font-condensed text-sm uppercase leading-none ${
                   Math.abs(zoom - z) < 0.05
                     ? "border-foreground bg-foreground text-background"
                     : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground"
