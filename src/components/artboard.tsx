@@ -94,7 +94,7 @@ function ArtboardGrid({
           <img
             src={b.creative}
             alt={`${b.brand} creative`}
-            className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain"}`}
+            className="h-full w-full object-cover"
           />
         </a>
       ))}
@@ -117,9 +117,7 @@ function ArtboardGrid({
             <img
               src={creative}
               alt="Your creative preview"
-              className={`pointer-events-none h-full w-full ${
-                creativeFit === "cover" ? "object-cover" : "object-contain"
-              }`}
+              className="pointer-events-none h-full w-full object-cover"
             />
           )}
           {interactive &&
@@ -276,7 +274,7 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
   const selectionTransform = useRef<SelectionTransform | null>(null);
   const [creative, setCreative] = useState<string | null>(null);
   const [creativeFile, setCreativeFile] = useState<File | null>(null);
-  const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("contain");
+  const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("cover");
   const [creativeAspect, setCreativeAspect] = useState(1);
   const [snapshot, setSnapshot] = useState<ArtboardSnapshot>(EMPTY_SNAPSHOT);
   const [brand, setBrand] = useState("");
@@ -847,7 +845,7 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
                   <img
                     src={creative}
                     alt="Uploaded logo preview"
-                    className={`h-full w-full ${creativeFit === "cover" ? "object-cover" : "object-contain"}`}
+                    className="h-full w-full object-cover"
                   />
                 ) : (
                   <Upload aria-hidden="true" size={34} strokeWidth={1.5} className="text-muted-foreground" />
@@ -875,7 +873,7 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
                       }
                     };
                     image.src = objectUrl;
-                    setCreativeFit(file.type === "image/jpeg" ? "cover" : "contain");
+                    setCreativeFit("cover");
                       setCreativeFile(file);
                     setCreative(objectUrl);
                       setTermsAccepted(false);

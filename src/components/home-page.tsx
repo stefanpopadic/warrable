@@ -111,12 +111,14 @@ function LeaderboardTable({ leaderboard }: { leaderboard: LeaderboardEntry[] }) 
                 }`}
               >
                 {r.logo ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={r.logo}
-                    alt={`${r.brand} logo`}
-                    className="h-10 w-10 rounded-sm bg-white object-contain p-1 sm:h-12 sm:w-12"
-                  />
+                  <span className="h-10 w-10 overflow-hidden rounded-sm sm:h-12 sm:w-12">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={r.logo}
+                      alt={`${r.brand} logo`}
+                      className="h-full w-full object-cover"
+                    />
+                  </span>
                 ) : (
                   String(r.rank).padStart(2, "0")
                 )}
