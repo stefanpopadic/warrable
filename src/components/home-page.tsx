@@ -402,7 +402,7 @@ const FRIENDLY_QUESTIONS: [string, string][] = [
   ],
   [
     "Can another buyer outbid my placement?",
-    "No. Version one sells only free space. Once Dodo confirms your payment, that placement is yours and cannot be displaced.",
+    "No. Version one sells only free space. Once Stripe confirms your payment, that placement is yours and cannot be displaced.",
   ],
   [
     "What artwork should I upload?",
@@ -410,7 +410,7 @@ const FRIENDLY_QUESTIONS: [string, string][] = [
   ],
   [
     "When do I pay?",
-    "At checkout. Dodo reserves your space for 30 minutes, and the logo goes live only after payment is confirmed. Completed purchases are final and non-refundable.",
+    "At checkout. Stripe reserves your space for 30 minutes, and the logo goes live only after payment is confirmed. Completed purchases are final and non-refundable.",
   ],
   [
     "What happens when the auction closes?",
