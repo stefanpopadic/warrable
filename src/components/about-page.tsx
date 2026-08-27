@@ -1,9 +1,8 @@
 "use client";
 
-import { PageShell, useBuyPanel } from "@/components/page-shell";
+import { BuyButton, PageShell } from "@/components/page-shell";
 
 function AboutContent() {
-  const { openBuy } = useBuyPanel();
   return (
     <PageShell>
       <section className="border-b border-border px-6 py-16 lg:px-8">
@@ -20,7 +19,7 @@ function AboutContent() {
 
       <section className="border-b border-border px-6 py-16 lg:px-8">
         <div className="mx-auto max-w-3xl">
-          <h2 className="font-display text-3xl tracking-tight">THE IDEA</h2>
+          <h2 className="section-heading">THE IDEA</h2>
           <p className="mt-3 text-muted-foreground">
             The internet billboard becomes a real billboard you can wear. Every bid buys a piece of the
             shirt. The more money a brand puts in, the bigger its space becomes.
@@ -34,7 +33,7 @@ function AboutContent() {
 
       <section className="border-b border-border px-6 py-16 lg:px-8">
         <div className="mx-auto max-w-3xl">
-          <h2 className="font-display text-3xl tracking-tight">THE SHIRT</h2>
+          <h2 className="section-heading">THE SHIRT</h2>
           <p className="mt-3 text-muted-foreground">
             Once the auction closes, the digital artboard is exported at print resolution and applied to a
             real garment. The shirt is then worn in public and documented as part of the project.
@@ -44,7 +43,7 @@ function AboutContent() {
 
       <section className="border-b border-border px-6 py-16 lg:px-8">
         <div className="mx-auto max-w-3xl">
-          <h2 className="font-display text-3xl tracking-tight">THE AUCTION</h2>
+          <h2 className="section-heading">THE AUCTION</h2>
           <p className="mt-3 text-muted-foreground">
             Space is sold at $2.20 per printed pixel, with a 100-pixel minimum. Bidders can drag their own
             area or let the system find a free block. Logos are uploaded, previewed, and locked when the bid
@@ -55,18 +54,12 @@ function AboutContent() {
 
       <section className="px-6 py-16 lg:px-8">
         <div className="mx-auto max-w-3xl">
-          <h2 className="font-display text-3xl tracking-tight">PLACEHOLDER</h2>
+          <h2 className="section-heading">PLACEHOLDER</h2>
           <p className="mt-3 text-muted-foreground">
             More details, photos, and timeline coming soon. This section is placeholder content while the
             final copy is prepared.
           </p>
-          <button
-            type="button"
-            onClick={openBuy}
-            className="mt-8 bg-foreground px-7 py-3 font-display text-xl tracking-wide text-background hover:opacity-90"
-          >
-            BUY SPACE
-          </button>
+          <BuyButton className="mt-8 bg-foreground px-7 py-3 font-display text-xl tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground" />
         </div>
       </section>
     </PageShell>

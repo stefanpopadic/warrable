@@ -4,9 +4,8 @@
 
 @theme inline {
   --font-display: var(--font-anton), "Arial Narrow", sans-serif;
-  --font-condensed: var(--font-barlow-condensed), "Arial Narrow", sans-serif;
-  --font-sans: var(--font-barlow), system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-condensed: var(--font-ibm-plex-sans), system-ui, sans-serif;
+  --font-sans: var(--font-ibm-plex-sans), system-ui, sans-serif;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -96,4 +95,11 @@
     width: 0;
     height: 0;
   }
+}
+
+@utility section-heading {
+  font-family: var(--font-display);
+  font-size: clamp(2.5rem, 5vw, 4rem);
+  line-height: 1.05;
+  letter-spacing: -0.025em;
 }

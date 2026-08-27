@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Anton, Barlow, Barlow_Condensed, JetBrains_Mono } from "next/font/google";
+import { Anton, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 
 const anton = Anton({
@@ -9,24 +9,10 @@ const anton = Anton({
   display: "swap",
 });
 
-const barlow = Barlow({
+const ibmPlexSans = IBM_Plex_Sans({
   weight: ["400", "500", "600"],
   subsets: ["latin"],
-  variable: "--font-barlow",
-  display: "swap",
-});
-
-const barlowCondensed = Barlow_Condensed({
-  weight: ["400", "500", "600", "700"],
-  subsets: ["latin"],
-  variable: "--font-barlow-condensed",
-  display: "swap",
-});
-
-const jetbrains = JetBrains_Mono({
-  weight: ["400", "500"],
-  subsets: ["latin"],
-  variable: "--font-jetbrains",
+  variable: "--font-ibm-plex-sans",
   display: "swap",
 });
 
@@ -56,10 +42,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${anton.variable} ${barlow.variable} ${barlowCondensed.variable} ${jetbrains.variable}`}
-    >
+    <html lang="en" className={`${anton.variable} ${ibmPlexSans.variable}`}>
       <body className="bg-background font-sans text-foreground antialiased">{children}</body>
     </html>
   );

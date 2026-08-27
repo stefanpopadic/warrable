@@ -1,7 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
-import { X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Focus,
+  Maximize2,
+  Upload,
+  X,
+} from "lucide-react";
 import {
   COLS,
   ROWS,
@@ -15,11 +24,18 @@ import {
 } from "@/lib/artboard";
 
 type Sel = { x: number; y: number; w: number; h: number } | null;
+type ResizeCorner = "nw" | "ne" | "sw" | "se";
+type SelectionTransform = {
+  mode: "move" | ResizeCorner;
+  start: { x: number; y: number };
+  initial: NonNullable<Sel>;
+};
 
 type Props = {
   className?: string;
   buyOpen?: boolean;
   onClose?: () => void;
+  onStartDraw?: () => void;
 };
 
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
@@ -36,12 +52,15 @@ function planRect(cells: number) {
   return { w: best.w, h: best.h };
 }
 
-export default function Artboard({ className = "", buyOpen = false, onClose }: Props) {
+export default function Artboard({ className = "", buyOpen = false, onClose, onStartDraw }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<Sel>(null);
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
+  const selectionTransform = useRef<SelectionTransform | null>(null);
   const [creative, setCreative] = useState<string | null>(null);
+  const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("contain");
+  const [creativeAspect, setCreativeAspect] = useState(1);
   const [placed, setPlaced] = useState<Block[]>([]);
   const [brand, setBrand] = useState("");
   const [url, setUrl] = useState("");
@@ -54,17 +73,45 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
   );
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinch = useRef<{ dist: number; zoom: number } | null>(null);
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [base, setBase] = useState<{ w: number; h: number } | null>(null);
+  const [buyStep, setBuyStep] = useState<1 | 2>(1);
   const [amount, setAmount] = useState("2200");
   const [pixels, setPixels] = useState("1000");
   const [autoNote, setAutoNote] = useState<string | null>(null);
 
   useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const measure = () => {
+      const r = vp.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return;
+      const rightPadding = Number.parseFloat(window.getComputedStyle(vp).paddingRight) || 0;
+      const availableWidth = Math.max(1, r.width - rightPadding);
+      const h = r.height;
+      const w = Math.min(availableWidth, (h * COLS) / ROWS);
+      setBase({ w, h: (w * ROWS) / COLS });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(vp);
+    return () => ro.disconnect();
+  }, [buyOpen]);
+
+  useEffect(() => {
+    if (pinch.current) return;
+    const frame = requestAnimationFrame(() => {
+      const vp = viewportRef.current;
+      if (!vp) return;
+      vp.scrollLeft = Math.max(0, (vp.scrollWidth - vp.clientWidth) / 2);
+      vp.scrollTop = Math.max(0, (vp.scrollHeight - vp.clientHeight) / 2);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [zoom, base]);
+
+  useEffect(() => {
     if (buyOpen) {
-      setPanelOpen(true);
+      setBuyStep(1);
       setAutoNote(null);
-    } else {
-      setPanelOpen(false);
     }
   }, [buyOpen]);
 
@@ -87,6 +134,22 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
     const x = clamp(Math.floor(((e.clientX - r.left) / r.width) * COLS), 0, COLS - 1);
     const y = clamp(Math.floor(((e.clientY - r.top) / r.height) * ROWS), 0, ROWS - 1);
     return { x, y };
+  };
+
+  const startSelectionTransform = (
+    e: PointerEvent,
+    mode: SelectionTransform["mode"],
+  ) => {
+    if (!sel) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    selectionTransform.current = {
+      mode,
+      start: cellFrom(e),
+      initial: { ...sel },
+    };
+    setHint(null);
   };
 
   const onPointerDown = (e: PointerEvent) => {
@@ -120,12 +183,42 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
       return;
     }
     setHint(null);
-    setPanelOpen(false);
     setDrag(c);
     setSel({ ...c, w: 1, h: 1 });
   };
 
   const onPointerMove = (e: PointerEvent) => {
+    const transform = selectionTransform.current;
+    if (transform) {
+      e.preventDefault();
+      const cell = cellFrom(e);
+      const { initial } = transform;
+
+      if (transform.mode === "move") {
+        const candidate = {
+          ...initial,
+          x: clamp(initial.x + cell.x - transform.start.x, 0, COLS - initial.w),
+          y: clamp(initial.y + cell.y - transform.start.y, 0, ROWS - initial.h),
+        };
+        if (!occupied(candidate.x, candidate.y, candidate.w, candidate.h)) setSel(candidate);
+        return;
+      }
+
+      let left = initial.x;
+      let top = initial.y;
+      let right = initial.x + initial.w;
+      let bottom = initial.y + initial.h;
+
+      if (transform.mode.includes("w")) left = clamp(cell.x, 0, right - 1);
+      if (transform.mode.includes("e")) right = clamp(cell.x + 1, left + 1, COLS);
+      if (transform.mode.includes("n")) top = clamp(cell.y, 0, bottom - 1);
+      if (transform.mode.includes("s")) bottom = clamp(cell.y + 1, top + 1, ROWS);
+
+      const candidate = { x: left, y: top, w: right - left, h: bottom - top };
+      if (!occupied(candidate.x, candidate.y, candidate.w, candidate.h)) setSel(candidate);
+      return;
+    }
+
     if (pointers.current.has(e.pointerId))
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -157,9 +250,11 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
   };
 
   const endPointer = (e?: PointerEvent) => {
+    selectionTransform.current = null;
     if (e) pointers.current.delete(e.pointerId);
     else pointers.current.clear();
     if (pointers.current.size < 2) pinch.current = null;
+    if (drag && sel && !buyOpen) onStartDraw?.();
     setDrag(null);
     setPanning(false);
     panStart.current = null;
@@ -168,8 +263,8 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.code === "Escape") {
+        selectionTransform.current = null;
         setSel(null);
-        setPanelOpen(false);
         onClose?.();
         return;
       }
@@ -186,6 +281,7 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
       }
     };
     const pointerUp = () => {
+      selectionTransform.current = null;
       pointers.current.clear();
       pinch.current = null;
       setDrag(null);
@@ -202,16 +298,71 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
     };
   }, [spaceDown, onClose]);
 
-  const resize = (dw: number, dh: number) => {
+  const expandToAvailable = () => {
     if (!sel) return;
-    const w = clamp(sel.w + dw, 1, COLS - sel.x);
-    const h = clamp(sel.h + dh, 1, ROWS - sel.y);
-    if (occupied(sel.x, sel.y, w, h)) {
-      setHint("Can't expand — neighbouring space is sold.");
+
+    let best = sel;
+    let bestArea = sel.w * sel.h;
+    const selectedBottom = sel.y + sel.h;
+
+    for (let top = sel.y; top >= 0; top -= 1) {
+      for (let bottom = selectedBottom; bottom <= ROWS; bottom += 1) {
+        const height = bottom - top;
+        if (occupied(sel.x, top, sel.w, height)) continue;
+
+        let left = sel.x;
+        while (left > 0 && !occupied(left - 1, top, 1, height)) left -= 1;
+
+        let right = sel.x + sel.w;
+        while (right < COLS && !occupied(right, top, 1, height)) right += 1;
+
+        const area = (right - left) * height;
+        if (area > bestArea) {
+          best = { x: left, y: top, w: right - left, h: height };
+          bestArea = area;
+        }
+      }
+    }
+
+    if (bestArea === sel.w * sel.h) {
+      setHint("This selection already fills all available space around it.");
       return;
     }
+
     setHint(null);
-    setSel({ ...sel, w, h });
+    setSel(best);
+  };
+
+  const fitSelectionToLogo = () => {
+    if (!sel) return;
+
+    const area = sel.w * sel.h;
+    const targetW = clamp(Math.round(Math.sqrt(area * creativeAspect)), 1, COLS);
+    const targetH = clamp(Math.ceil(area / targetW), 1, ROWS);
+    const currentCenterX = sel.x + sel.w / 2;
+    const currentCenterY = sel.y + sel.h / 2;
+    let nearest: Sel = null;
+    let nearestDistance = Infinity;
+
+    for (let y = 0; y <= ROWS - targetH; y += 1) {
+      for (let x = 0; x <= COLS - targetW; x += 1) {
+        if (occupied(x, y, targetW, targetH)) continue;
+        const distance =
+          Math.abs(x + targetW / 2 - currentCenterX) + Math.abs(y + targetH / 2 - currentCenterY);
+        if (distance < nearestDistance) {
+          nearest = { x, y, w: targetW, h: targetH };
+          nearestDistance = distance;
+        }
+      }
+    }
+
+    if (!nearest) {
+      setHint("There isn't enough free space nearby to fit this logo ratio.");
+      return;
+    }
+
+    setHint(null);
+    setSel(nearest);
   };
 
   const nudge = (dx: number, dy: number) => {
@@ -257,7 +408,6 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
         ? null
         : `Not that much free space left — reserved the largest free block instead (${found.w * found.h * CELL_PX * CELL_PX} px).`,
     );
-    setPanelOpen(false);
   };
 
   const syncFromAmount = (v: string) => {
@@ -283,13 +433,20 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
         ...sel,
         brand: brandName,
         url: bidUrl,
-        bg: creative ? "transparent" : "#ffffff",
+        creative: creative ?? undefined,
+        creativeFit,
+        bg: "transparent",
         fg: "#000000",
         bid: price,
       },
     ]);
     setSel(null);
+    setCreative(null);
+    setCreativeFit("contain");
+    setCreativeAspect(1);
+    setBrand("");
     setUrl("");
+    setBuyStep(1);
     setHint(`Bid placed: ${usd(price)} for ${selPixels.toLocaleString()} px.`);
     onClose?.();
   };
@@ -300,12 +457,15 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
   const previewRect = planRect(Math.max(1, previewPx / (CELL_PX * CELL_PX)));
   const previewW = previewRect.w * CELL_PX;
   const previewH = previewRect.h * CELL_PX;
+  const identityReady = Boolean(creative && brand.trim() && url.trim());
 
   return (
     <div className={`relative h-full w-full overflow-hidden bg-black ${className}`}>
       <div
         ref={viewportRef}
-        className={`no-scrollbar absolute inset-0 flex touch-none items-center justify-center overflow-auto ${cursor}`}
+        className={`no-scrollbar absolute inset-0 touch-none overflow-auto ${
+          buyOpen ? "pr-80 lg:pr-96" : ""
+        } ${cursor}`}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
@@ -313,12 +473,11 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
       >
         <div
           ref={ref}
-          className="relative touch-none select-none bg-[#0b0b0b]"
+          className="relative m-auto touch-none select-none bg-[#0b0b0b]"
           style={{
-            aspectRatio: `${COLS} / ${ROWS}`,
-            height: `${100 * zoom}%`,
-            width: "auto",
-            maxWidth: `${100 * zoom}%`,
+            width: base ? `${base.w * zoom}px` : "100%",
+            height: base ? `${base.h * zoom}px` : "auto",
+            aspectRatio: base ? undefined : `${COLS} / ${ROWS}`,
             flex: "0 0 auto",
           }}
         >
@@ -328,7 +487,8 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
               href={b.url}
               target="_blank"
               rel="noreferrer"
-              title={`${b.brand} — ${usd(b.bid)} — ${b.url}`}
+              title={`${b.brand} — ${usd(b.bid)}`}
+              aria-label={`${b.brand}, ${usd(b.bid)}`}
               onPointerDown={(e) => e.stopPropagation()}
               className="absolute overflow-hidden hover:z-20 hover:ring-2 hover:ring-white"
               style={{
@@ -340,18 +500,13 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
                 color: b.fg,
               }}
             >
-              {b.w >= 4 && b.h >= 2 && (
-                <span
-                  className="absolute inset-0 flex flex-col items-center justify-center truncate px-[2px] font-display leading-none"
-                  style={{ fontSize: `clamp(5px, ${b.h * 0.55 * zoom}vh, ${22 * zoom}px)` }}
-                >
-                  <span className="truncate">{b.brand}</span>
-                  {b.w >= 8 && b.h >= 4 && (
-                    <span className="mt-0.5 truncate font-mono text-[0.55em] opacity-80">
-                      {b.url.replace(/^https:\/\//, "")}
-                    </span>
-                  )}
-                </span>
+              {b.logo && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={b.logo}
+                  alt={`${b.brand} logo`}
+                  className="h-full w-full object-contain p-[14%]"
+                />
               )}
             </a>
           ))}
@@ -362,7 +517,8 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
               href={b.url}
               target="_blank"
               rel="noreferrer"
-              title={`${b.brand} — ${usd(b.bid)} — ${b.url}`}
+              title={`${b.brand} — ${usd(b.bid)}`}
+              aria-label={`${b.brand}, ${usd(b.bid)}`}
               onPointerDown={(e) => e.stopPropagation()}
               className="absolute overflow-hidden ring-1 ring-white hover:z-20 hover:ring-2"
               style={{
@@ -370,235 +526,349 @@ export default function Artboard({ className = "", buyOpen = false, onClose }: P
                 top: pct(b.y, ROWS),
                 width: pct(b.w, COLS),
                 height: pct(b.h, ROWS),
-                background: creative ? "#fff" : b.bg,
+                background: b.bg,
               }}
             >
-              {creative ? (
+              {b.creative && (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={creative} alt={b.brand} className="h-full w-full object-cover" />
-              ) : (
-                <span
-                  className="absolute inset-0 flex flex-col items-center justify-center px-[2px] text-center font-display leading-none text-black"
-                  style={{ fontSize: `clamp(5px, ${b.h * 0.55 * zoom}vh, ${20 * zoom}px)` }}
-                >
-                  <span>{b.brand}</span>
-                  {b.w >= 6 && b.h >= 3 && (
-                    <span className="mt-0.5 font-mono text-[0.8em] opacity-80">
-                      {b.url.replace(/^https:\/\//, "")}
-                    </span>
-                  )}
-                </span>
+                <img
+                  src={b.creative}
+                  alt={`${b.brand} creative`}
+                  className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain"}`}
+                />
               )}
             </a>
           ))}
 
           {sel && (
             <div
-              className="pointer-events-none absolute z-10 border-2 border-white bg-white/15"
+              className={`group absolute z-10 cursor-move border-2 border-white ${
+                creative ? "bg-transparent" : "bg-white/15"
+              }`}
               style={{
                 left: pct(sel.x, COLS),
                 top: pct(sel.y, ROWS),
                 width: pct(sel.w, COLS),
                 height: pct(sel.h, ROWS),
               }}
+              onPointerDown={(e) => startSelectionTransform(e, "move")}
             >
               {creative && (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={creative} alt="Your creative preview" className="h-full w-full object-cover" />
+                <img
+                  src={creative}
+                  alt="Your creative preview"
+                  className={`pointer-events-none h-full w-full ${
+                    creativeFit === "cover" ? "object-cover" : "object-contain"
+                  }`}
+                />
               )}
+              {(
+                [
+                  ["nw", "-left-2 -top-2 cursor-nwse-resize", "Resize from top left"],
+                  ["ne", "-right-2 -top-2 cursor-nesw-resize", "Resize from top right"],
+                  ["sw", "-bottom-2 -left-2 cursor-nesw-resize", "Resize from bottom left"],
+                  ["se", "-bottom-2 -right-2 cursor-nwse-resize", "Resize from bottom right"],
+                ] as const
+              ).map(([corner, position, label]) => (
+                <button
+                  key={corner}
+                  type="button"
+                  aria-label={label}
+                  onPointerDown={(e) => startSelectionTransform(e, corner)}
+                  className={`absolute z-20 h-4 w-4 rounded-full border-2 border-black bg-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${position}`}
+                />
+              ))}
             </div>
           )}
         </div>
       </div>
 
-      <div className="pointer-events-auto absolute bottom-4 left-4 z-30 flex items-center gap-2 rounded border border-border/50 bg-black/85 p-2 backdrop-blur">
-        {([1, 2, 5] as const).map((z) => (
-          <button
-            key={z}
-            onClick={() => setZoom(z)}
-            className={`h-11 border px-3.5 font-mono text-sm uppercase leading-none ${
-              Math.abs(zoom - z) < 0.05
-                ? "border-foreground bg-foreground text-background"
-                : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground"
-            }`}
-            aria-label={`Zoom ${z}x`}
-          >
-            {z}×
-          </button>
-        ))}
+      <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex items-center justify-center">
+        <div className="pointer-events-auto flex items-center gap-2 rounded border border-border/50 bg-black/85 p-2 backdrop-blur">
+          {([1, 2, 5] as const).map((z) => (
+            <button
+              key={z}
+              onClick={() => setZoom(z)}
+              className={`h-11 border px-3.5 font-condensed text-sm uppercase leading-none ${
+                Math.abs(zoom - z) < 0.05
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground"
+              }`}
+              aria-label={`Zoom ${z}x`}
+            >
+              {z}×
+            </button>
+          ))}
+        </div>
       </div>
 
-      {buyOpen && (
-        <div className="pointer-events-auto absolute right-0 top-0 bottom-0 z-40 w-80 overflow-y-auto border-l border-border bg-card/95 backdrop-blur lg:w-96">
-          <div className="sticky top-0 z-10 flex items-start justify-between border-b border-border/40 bg-card/95 p-4 backdrop-blur">
-            <div>
-              <p className="font-display text-lg tracking-wide">BUY SPACE ON THE SHIRT</p>
-              <p className="mt-0.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                $2.20 / pixel · $220 minimum
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setPanelOpen(false);
-                onClose?.();
-              }}
-              aria-label="Close buy panel"
-              className="ml-3 flex h-9 w-9 shrink-0 items-center justify-center border border-border hover:bg-secondary"
-            >
-              <X size={16} />
-            </button>
+      <div
+        className={`absolute right-0 top-0 bottom-0 z-40 w-80 overflow-y-auto border-l border-border bg-card/95 backdrop-blur transition-[translate] duration-500 ease-out lg:w-96 ${
+          buyOpen ? "pointer-events-auto translate-x-0" : "pointer-events-none translate-x-full"
+        }`}
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between border-b border-border/40 bg-card/95 p-4 backdrop-blur">
+          <div>
+            <p className="font-display text-lg tracking-wide">BUY SPACE ON THE SHIRT</p>
+            <p className="mt-0.5 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+              $2.20 / pixel · $220 minimum
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close buy panel"
+            className="ml-3 flex h-9 w-9 shrink-0 items-center justify-center border border-border hover:bg-secondary"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="p-4">
+          <div className="flex items-center justify-between border-b border-border/50 pb-3 font-condensed text-xs uppercase tracking-widest">
+            <span className="text-foreground">Step {buyStep} of 2</span>
+            <span className="text-muted-foreground">{buyStep === 1 ? "Your brand" : "Your position"}</span>
           </div>
 
-          <div className="p-4">
-            {panelOpen ? (
-              <div className="flex flex-col gap-3">
-                <label className="block">
-                  <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                    Your budget ($)
-                  </span>
-                  <input
-                    inputMode="numeric"
-                    value={amount}
-                    onChange={(e) => syncFromAmount(e.target.value)}
-                    className="mt-1 h-11 w-full border border-border bg-transparent px-3 font-display text-lg outline-none focus:border-foreground"
+          {buyStep === 1 ? (
+            <div>
+              <label className="relative mt-4 flex h-44 cursor-pointer items-center justify-center overflow-hidden border border-dashed border-border bg-black/20 text-center transition-colors hover:border-foreground hover:bg-black/35">
+                {creative ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={creative}
+                    alt="Uploaded logo preview"
+                    className={`h-full w-full ${creativeFit === "cover" ? "object-cover" : "object-contain"}`}
                   />
-                </label>
-                <label className="block">
-                  <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                    Pixels
-                  </span>
-                  <input
-                    inputMode="numeric"
-                    value={pixels}
-                    onChange={(e) => syncFromPixels(e.target.value)}
-                    className="mt-1 h-11 w-full border border-border bg-transparent px-3 font-display text-lg outline-none focus:border-foreground"
-                  />
-                </label>
-                <p className="font-mono text-[11px] text-muted-foreground">
-                  {usd(previewPx * PRICE_PER_PIXEL)} = {previewPx.toLocaleString()} pixels ={" "}
-                  {previewPx >= 100 ? `a ${previewW}×${previewH} px block` : "at least 100 pixels ($220)"}
+                ) : (
+                  <Upload aria-hidden="true" size={34} strokeWidth={1.5} className="text-muted-foreground" />
+                )}
+                <span className="absolute inset-x-0 bottom-0 bg-black/85 py-2.5 font-condensed text-xs uppercase tracking-widest text-white">
+                  {creative ? "Change logo" : "Upload logo"}
+                </span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const objectUrl = URL.createObjectURL(file);
+                    const image = new window.Image();
+                    image.onload = () => {
+                      if (image.naturalHeight > 0) {
+                        setCreativeAspect(image.naturalWidth / image.naturalHeight);
+                      }
+                    };
+                    image.src = objectUrl;
+                    setCreativeFit(file.type === "image/jpeg" ? "cover" : "contain");
+                    setCreative(objectUrl);
+                  }}
+                />
+              </label>
+
+              <label className="mt-4 block">
+                <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                  Brand name
+                </span>
+                <input
+                  value={brand}
+                  onChange={(e) => setBrand(e.target.value)}
+                  placeholder="Your brand"
+                  className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-condensed text-base outline-none placeholder:text-muted-foreground focus:border-foreground"
+                />
+              </label>
+
+              <label className="mt-3 block">
+                <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                  Website
+                </span>
+                <input
+                  type="url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://yourbrand.com"
+                  className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-condensed text-base outline-none placeholder:text-muted-foreground focus:border-foreground"
+                />
+              </label>
+
+              <button
+                type="button"
+                disabled={!identityReady}
+                onClick={() => setBuyStep(2)}
+                className="mt-4 h-12 w-full bg-foreground px-5 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
+              >
+                NEXT · CHOOSE POSITION
+              </button>
+              {!identityReady && (
+                <p className="mt-2 text-center font-condensed text-xs text-muted-foreground">
+                  Add your logo, brand name and website to continue.
                 </p>
-                {autoNote && <p className="font-mono text-[11px] text-foreground">{autoNote}</p>}
-                <div className="mt-2 flex flex-col gap-2">
+              )}
+            </div>
+          ) : (
+            <div>
+              <button
+                type="button"
+                onClick={() => setBuyStep(1)}
+                className="mt-4 flex items-center gap-2 font-condensed text-xs uppercase tracking-widest text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeft aria-hidden="true" size={14} />
+                Edit brand
+              </button>
+
+              {!sel ? (
+                <div className="mt-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                        Budget ($)
+                      </span>
+                      <input
+                        inputMode="numeric"
+                        value={amount}
+                        onChange={(e) => syncFromAmount(e.target.value)}
+                        className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-display text-lg outline-none focus:border-foreground"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                        Pixels
+                      </span>
+                      <input
+                        inputMode="numeric"
+                        value={pixels}
+                        onChange={(e) => syncFromPixels(e.target.value)}
+                        className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-display text-lg outline-none focus:border-foreground"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-3 border border-border bg-black/20 p-3">
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                          Estimated block
+                        </p>
+                        <p className="mt-1 font-display text-2xl leading-none">
+                          {previewW}×{previewH} px
+                        </p>
+                      </div>
+                      <p className="font-display text-xl leading-none">{usd(previewPx * PRICE_PER_PIXEL)}</p>
+                    </div>
+                  </div>
+
+                  {autoNote && <p className="mt-3 font-condensed text-xs text-foreground">{autoNote}</p>}
+                  {hint && <p className="mt-3 font-condensed text-xs text-muted-foreground">{hint}</p>}
+
                   <button
+                    type="button"
                     onClick={applyAmount}
-                    className="h-11 bg-foreground px-5 font-display text-base tracking-wide text-background hover:opacity-90"
+                    className="mt-4 h-12 w-full bg-foreground px-5 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
                   >
                     FIND MY SPACE
                   </button>
                   <button
-                    onClick={() => {
-                      setPanelOpen(false);
-                      setHint("Drag anywhere on the black space to select your area.");
-                    }}
-                    className="h-11 border border-border px-5 font-mono text-[11px] uppercase tracking-widest hover:bg-secondary"
+                    type="button"
+                    onClick={() => setHint("Drag over any free area on the artboard.")}
+                    className="mt-2 h-11 w-full border border-border px-5 font-condensed text-xs uppercase tracking-widest hover:bg-secondary"
                   >
-                    Drag it myself
+                    Draw on artboard
                   </button>
                 </div>
-              </div>
-            ) : !sel ? (
-              <div className="flex flex-col gap-4">
-                <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-                  {hint ?? "Drag anywhere on the black space to select your area."}
-                </p>
-                <button
-                  onClick={() => setPanelOpen(true)}
-                  className="h-11 border border-border px-5 font-mono text-[11px] uppercase tracking-widest hover:bg-secondary"
-                >
-                  Enter amount
-                </button>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                      Selected
-                    </p>
-                    <p className="font-display text-xl leading-none">
-                      {sel.w * CELL_PX}×{sel.h * CELL_PX} px
-                    </p>
-                    <p className="font-mono text-[11px] text-muted-foreground">
-                      {selPixels.toLocaleString()} pixels
-                    </p>
+              ) : (
+                <div className="mt-4">
+                  <div className="grid grid-cols-2 border border-border bg-black/20">
+                    <div className="border-r border-border p-3">
+                      <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                        Selected
+                      </p>
+                      <p className="mt-1 font-display text-xl leading-none">
+                        {sel.w * CELL_PX}×{sel.h * CELL_PX} px
+                      </p>
+                      <p className="mt-1 font-condensed text-xs text-muted-foreground">
+                        {selPixels.toLocaleString()} pixels
+                      </p>
+                    </div>
+                    <div className="p-3">
+                      <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                        Your bid
+                      </p>
+                      <p className="mt-1 font-display text-2xl leading-none">{usd(price)}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                      Your bid
+
+                  <div className="mt-4">
+                    <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                      Size
                     </p>
-                    <p className="font-display text-xl leading-none">{usd(price)}</p>
+                    <div className="mt-1.5 grid grid-cols-2 gap-2">
+                      {[
+                        { label: "Fit logo", Icon: Focus, action: fitSelectionToLogo },
+                        { label: "Expand", Icon: Maximize2, action: expandToAvailable },
+                      ].map(({ label, Icon, action }) => (
+                          <button
+                            key={label}
+                            type="button"
+                            onClick={action}
+                            title={label === "Expand" ? "Expand to fill all available space" : undefined}
+                            className="flex h-11 items-center justify-center gap-2 border border-border font-condensed text-xs uppercase tracking-widest hover:bg-secondary"
+                          >
+                            <Icon aria-hidden="true" size={15} />
+                            {label}
+                          </button>
+                        ))}
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex flex-wrap gap-2">
-                  {([[-2, -2, "−"], [2, 2, "+"]] as const).map(([dw, dh, label]) => (
-                    <button
-                      key={label}
-                      onClick={() => resize(dw, dh)}
-                      className="h-9 w-9 border border-border font-display text-lg leading-none hover:bg-secondary"
-                      aria-label={label === "+" ? "Expand selection" : "Shrink selection"}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <div className="grid grid-cols-4 gap-1">
-                  {(
-                    [
-                      ["←", -1, 0],
-                      ["→", 1, 0],
-                      ["↑", 0, -1],
-                      ["↓", 0, 1],
-                    ] as const
-                  ).map(([l, dx, dy]) => (
-                    <button
-                      key={l}
-                      onClick={() => nudge(dx, dy)}
-                      className="h-9 w-9 border border-border font-mono text-sm leading-none hover:bg-secondary"
-                      aria-label={`Move selection ${l}`}
-                    >
-                      {l}
-                    </button>
-                  ))}
-                </div>
+                  <div className="mt-4">
+                    <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                      Position
+                    </p>
+                    <div className="mt-1.5 grid grid-cols-4 gap-2">
+                      {(
+                        [
+                          ["Left", -1, 0, ArrowLeft],
+                          ["Right", 1, 0, ArrowRight],
+                          ["Up", 0, -1, ArrowUp],
+                          ["Down", 0, 1, ArrowDown],
+                        ] as const
+                      ).map(([label, dx, dy, Icon]) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => nudge(dx, dy)}
+                          className="h-11 border border-border font-display text-base leading-none hover:bg-secondary"
+                          aria-label={`Move selection ${label}`}
+                        >
+                          <Icon aria-hidden="true" className="mx-auto" size={16} />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
 
-                <label className="cursor-pointer border border-border px-3 py-2.5 text-center font-mono text-[11px] uppercase tracking-widest hover:bg-secondary">
-                  {creative ? "Change logo" : "Upload logo"}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) setCreative(URL.createObjectURL(f));
-                    }}
-                  />
-                </label>
+                  {hint && <p className="mt-3 font-condensed text-xs text-muted-foreground">{hint}</p>}
 
-                <input
-                  value={brand}
-                  onChange={(e) => setBrand(e.target.value)}
-                  placeholder="Brand name"
-                  className="h-10 w-full border border-border bg-transparent px-3 font-mono text-xs outline-none placeholder:text-muted-foreground focus:border-foreground"
-                />
-                <input
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://yourbrand.com"
-                  className="h-10 w-full border border-border bg-transparent px-3 font-mono text-xs outline-none placeholder:text-muted-foreground focus:border-foreground"
-                />
-                <button
-                  onClick={placeBid}
-                  className="mt-1 w-full bg-foreground py-3 font-display text-base tracking-wide text-background hover:opacity-90"
-                >
-                  PLACE BID · {usd(price)}
-                </button>
+                  <button
+                    type="button"
+                    onClick={placeBid}
+                    className="mt-5 h-14 w-full bg-foreground px-5 font-display text-lg tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
+                  >
+                    PLACE BID · {usd(price)}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSel(null)}
+                    className="mt-2 h-10 w-full font-condensed text-xs uppercase tracking-widest text-muted-foreground hover:text-foreground"
+                  >
+                    Choose another position
+                  </button>
+                </div>
+              )}
               </div>
-            )}
-          </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

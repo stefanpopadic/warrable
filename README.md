@@ -1,4 +1,4 @@
-# Warrable — Million Dollar T-Shirt
+# 1MillionDollarTShirt
 
 Rebuild of the Lovable **Wearable Billboard** project as a real GitHub app.
 
