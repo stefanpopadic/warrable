@@ -4,24 +4,8 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { BuyButton, PageShell } from "@/components/page-shell";
 import { usd, formatPixelPrice } from "@/lib/artboard";
-import { AUCTION_END, CELL_PX, COLS, ROWS } from "@/lib/auction";
+import { AUCTION_END } from "@/lib/auction";
 import type { ArtboardSnapshot, LeaderboardEntry } from "@/lib/artboard-data";
-
-const EMPTY_SNAPSHOT: ArtboardSnapshot = {
-  placements: [],
-  occupied: [],
-  stats: {
-    raisedCents: 0,
-    pixelsSold: 0,
-    pixelsTotal: COLS * ROWS * CELL_PX * CELL_PX,
-    currentPriceCents: 25,
-    nextPriceCents: 50,
-    pixelsUntilNextTier: 100_000,
-  },
-  leaderboard: [],
-  auctionClosed: false,
-  auctionEnd: new Date(AUCTION_END).toISOString(),
-};
 
 function Countdown() {
   const [left, setLeft] = useState<number | null>(null);
@@ -438,9 +422,16 @@ const FRIENDLY_QUESTIONS: [string, string][] = [
   ],
 ];
 
-function HomeContent() {
+function HomeContent({
+  initialSnapshot,
+  snapshotReady: initialReady,
+}: {
+  initialSnapshot: ArtboardSnapshot;
+  snapshotReady: boolean;
+}) {
   const leftPanelRef = useRef<HTMLDivElement>(null);
-  const [snapshot, setSnapshot] = useState<ArtboardSnapshot>(EMPTY_SNAPSHOT);
+  const [snapshot, setSnapshot] = useState(initialSnapshot);
+  const [snapshotReady, setSnapshotReady] = useState(initialReady);
 
   useEffect(() => {
     let active = true;
@@ -452,6 +443,8 @@ function HomeContent() {
         if (active) setSnapshot(data);
       } catch {
         // Keep the last known public snapshot during transient failures.
+      } finally {
+        if (active) setSnapshotReady(true);
       }
     };
     void load();
@@ -465,7 +458,11 @@ function HomeContent() {
   const { stats, leaderboard } = snapshot;
 
   return (
-    <PageShell leftRef={leftPanelRef}>
+    <PageShell
+      leftRef={leftPanelRef}
+      initialSnapshot={initialSnapshot}
+      snapshotReady={initialReady}
+    >
       <section id="top" className="border-b border-border px-6 py-6 lg:px-8 lg:py-8">
         <div className="mx-auto mt-5 max-w-3xl text-left">
           <h1 className="text-center font-display text-[clamp(2.6rem,6vw,5rem)] leading-[0.95] tracking-tight">
@@ -519,7 +516,13 @@ function HomeContent() {
                 Largest current bidders
               </p>
             )}
-            {leaderboard.length === 0 ? (
+            {!snapshotReady ? (
+              <div className="border-y border-border px-4 py-7 text-center">
+                <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                  Loading bidders…
+                </p>
+              </div>
+            ) : leaderboard.length === 0 ? (
               <div className="border-y border-border px-4 py-7 text-center">
                 <div>
                   <h2 className="font-display text-3xl uppercase leading-none tracking-tight">
@@ -602,6 +605,12 @@ function HomeContent() {
   );
 }
 
-export function HomePage() {
-  return <HomeContent />;
+export function HomePage({
+  initialSnapshot,
+  snapshotReady,
+}: {
+  initialSnapshot: ArtboardSnapshot;
+  snapshotReady: boolean;
+}) {
+  return <HomeContent initialSnapshot={initialSnapshot} snapshotReady={snapshotReady} />;
 }

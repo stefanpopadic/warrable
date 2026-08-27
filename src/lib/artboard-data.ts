@@ -1,3 +1,4 @@
+import { AUCTION_END, CELL_PX, COLS, ROWS, TOTAL_PIXELS, pricePerPixelCents, nextPricePerPixelCents, pixelsUntilNextTier } from "@/lib/auction";
 import type { Rect } from "@/lib/auction";
 
 export type PublicPlacement = Rect & {
@@ -40,3 +41,21 @@ export type ArtboardSnapshot = {
   auctionClosed: boolean;
   auctionEnd: string;
 };
+
+export function emptyArtboardSnapshot(): ArtboardSnapshot {
+  return {
+    placements: [],
+    occupied: [],
+    stats: {
+      raisedCents: 0,
+      pixelsSold: 0,
+      pixelsTotal: TOTAL_PIXELS,
+      currentPriceCents: pricePerPixelCents(0),
+      nextPriceCents: nextPricePerPixelCents(0),
+      pixelsUntilNextTier: pixelsUntilNextTier(0),
+    },
+    leaderboard: [],
+    auctionClosed: false,
+    auctionEnd: new Date(AUCTION_END).toISOString(),
+  };
+}

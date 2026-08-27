@@ -20,6 +20,7 @@ import {
 } from "@/lib/artboard";
 import { MIN_PRINTED_PIXELS, amountCentsForPixels, pixelsForBudget } from "@/lib/auction";
 import type { ArtboardSnapshot } from "@/lib/artboard-data";
+import { emptyArtboardSnapshot } from "@/lib/artboard-data";
 
 type Sel = { x: number; y: number; w: number; h: number } | null;
 type ResizeCorner = "nw" | "ne" | "sw" | "se";
@@ -29,27 +30,15 @@ type SelectionTransform = {
   initial: NonNullable<Sel>;
 };
 
-const EMPTY_SNAPSHOT: ArtboardSnapshot = {
-  placements: [],
-  occupied: [],
-  stats: {
-    raisedCents: 0,
-    pixelsSold: 0,
-    pixelsTotal: COLS * ROWS * CELL_PX * CELL_PX,
-    currentPriceCents: 25,
-    nextPriceCents: 50,
-    pixelsUntilNextTier: 100_000,
-  },
-  leaderboard: [],
-  auctionClosed: false,
-  auctionEnd: "",
-};
+const EMPTY_SNAPSHOT = emptyArtboardSnapshot();
 
 type Props = {
   className?: string;
   buyOpen?: boolean;
   onClose?: () => void;
   onStartDraw?: () => void;
+  initialSnapshot?: ArtboardSnapshot;
+  snapshotReady?: boolean;
 };
 
 type ViewMode = "bidding" | "shirt";
@@ -266,7 +255,14 @@ function planRect(cells: number) {
   return { w: best.w, h: best.h };
 }
 
-export default function Artboard({ className = "", buyOpen = false, onClose, onStartDraw }: Props) {
+export default function Artboard({
+  className = "",
+  buyOpen = false,
+  onClose,
+  onStartDraw,
+  initialSnapshot,
+  snapshotReady: initialReady = false,
+}: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<Sel>(null);
@@ -276,7 +272,7 @@ export default function Artboard({ className = "", buyOpen = false, onClose, onS
   const [creativeFile, setCreativeFile] = useState<File | null>(null);
   const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("cover");
   const [creativeAspect, setCreativeAspect] = useState(1);
-  const [snapshot, setSnapshot] = useState<ArtboardSnapshot>(EMPTY_SNAPSHOT);
+  const [snapshot, setSnapshot] = useState(initialSnapshot ?? EMPTY_SNAPSHOT);
   const [brand, setBrand] = useState("");
   const [url, setUrl] = useState("");
   const [hint, setHint] = useState<string | null>(null);

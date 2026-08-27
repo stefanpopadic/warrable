@@ -10,6 +10,7 @@ import {
 } from "react";
 import Link from "next/link";
 import Artboard from "@/components/artboard";
+import type { ArtboardSnapshot } from "@/lib/artboard-data";
 
 const BuyPanelContext = createContext<{
   buying: boolean;
@@ -43,9 +44,13 @@ export function BuyButton({
 export function PageShell({
   children,
   leftRef,
+  initialSnapshot,
+  snapshotReady = false,
 }: {
   children: ReactNode;
   leftRef?: RefObject<HTMLDivElement | null>;
+  initialSnapshot?: ArtboardSnapshot;
+  snapshotReady?: boolean;
 }) {
   const [buying, setBuying] = useState(false);
 
@@ -121,7 +126,14 @@ export function PageShell({
             buying ? "lg:left-0 lg:right-0" : "lg:left-1/2 lg:right-0"
           }`}
         >
-          <Artboard className="h-full w-full" buyOpen={buying} onClose={closeBuy} onStartDraw={openBuy} />
+          <Artboard
+            className="h-full w-full"
+            buyOpen={buying}
+            onClose={closeBuy}
+            onStartDraw={openBuy}
+            initialSnapshot={initialSnapshot}
+            snapshotReady={snapshotReady}
+          />
         </aside>
 
         <footer className="border-t border-border px-6 py-6 font-condensed text-xs uppercase tracking-widest text-muted-foreground lg:hidden">
