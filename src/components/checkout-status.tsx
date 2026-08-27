@@ -25,7 +25,7 @@ function money(cents: number) {
   }).format(cents / 100);
 }
 
-export function CheckoutStatusPanel({ sessionId }: { sessionId: string }) {
+export function CheckoutStatusPanel({ reference }: { reference: string }) {
   const [result, setResult] = useState<CheckoutStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,7 +38,7 @@ export function CheckoutStatusPanel({ sessionId }: { sessionId: string }) {
       attempts += 1;
       try {
         const response = await fetch(
-          `/api/checkout/status?session_id=${encodeURIComponent(sessionId)}`,
+          `/api/checkout/status?ref=${encodeURIComponent(reference)}`,
           { cache: "no-store" },
         );
         const body = (await response.json()) as CheckoutStatus & { error?: string };
@@ -61,7 +61,7 @@ export function CheckoutStatusPanel({ sessionId }: { sessionId: string }) {
       active = false;
       if (timeout) window.clearTimeout(timeout);
     };
-  }, [sessionId]);
+  }, [reference]);
 
   const paid = result?.status === "paid";
   const review = result?.status === "payment_review";

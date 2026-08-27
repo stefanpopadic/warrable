@@ -1,23 +1,25 @@
-import { getCheckoutStatus } from "@/db/placements";
+import { getPlacementCheckoutStatus } from "@/db/placements";
+import { isCheckoutReference } from "@/lib/checkout";
 
 export const dynamic = "force-dynamic";
 
-function isCheckoutSessionId(value: string) {
-  return (
-    value.length > 0 &&
-    value.length <= 255 &&
-    (value.startsWith("cks_") || value.startsWith("cs_"))
-  );
+function readReference(request: Request) {
+  const params = new URL(request.url).searchParams;
+  const placementId = params.get("placement_id")?.trim();
+  const sessionId = params.get("session_id")?.trim();
+  const paymentId = params.get("payment_id")?.trim();
+  const ref = params.get("ref")?.trim();
+  return placementId ?? sessionId ?? paymentId ?? ref ?? "";
 }
 
 export async function GET(request: Request) {
-  const sessionId = new URL(request.url).searchParams.get("session_id")?.trim();
-  if (!sessionId || !isCheckoutSessionId(sessionId)) {
-    return Response.json({ error: "Invalid checkout session." }, { status: 400 });
+  const reference = readReference(request);
+  if (!isCheckoutReference(reference)) {
+    return Response.json({ error: "Invalid checkout reference." }, { status: 400 });
   }
 
   try {
-    const placement = await getCheckoutStatus(sessionId);
+    const placement = await getPlacementCheckoutStatus(reference);
     if (!placement) {
       return Response.json({ error: "Placement not found." }, { status: 404 });
     }

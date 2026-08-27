@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CheckoutStatusPanel } from "@/components/checkout-status";
+import { isCheckoutReference } from "@/lib/checkout";
 
 export const metadata: Metadata = {
   title: "Payment status",
@@ -10,23 +11,29 @@ export const metadata: Metadata = {
   },
 };
 
-function isCheckoutSessionId(value: string | undefined) {
-  if (!value || value.length > 255) return false;
-  return value.startsWith("cks_") || value.startsWith("cs_");
-}
-
 export default async function CheckoutSuccessPage({
   searchParams,
 }: {
-  searchParams: Promise<{ session_id?: string; status?: string }>;
+  searchParams: Promise<{
+    placement_id?: string;
+    session_id?: string;
+    payment_id?: string;
+    status?: string;
+  }>;
 }) {
-  const { session_id: sessionId, status } = await searchParams;
+  const params = await searchParams;
+  const reference =
+    params.placement_id?.trim() ??
+    params.session_id?.trim() ??
+    params.payment_id?.trim() ??
+    "";
+  const status = params.status?.trim().toLowerCase();
 
   return (
     <main className="flex min-h-[100dvh] items-center justify-center bg-background px-5 py-12 text-foreground">
-      {isCheckoutSessionId(sessionId) ? (
-        <CheckoutStatusPanel sessionId={sessionId!} />
-      ) : status === "failed" ? (
+      {isCheckoutReference(reference) ? (
+        <CheckoutStatusPanel reference={reference} />
+      ) : status === "failed" || status === "cancelled" ? (
         <div className="w-full max-w-lg border border-border bg-card p-8 text-center">
           <h1 className="font-display text-5xl uppercase leading-none">PAYMENT NOT COMPLETED.</h1>
           <p className="mt-5 text-muted-foreground">
@@ -41,15 +48,16 @@ export default async function CheckoutSuccessPage({
         </div>
       ) : (
         <div className="w-full max-w-lg border border-border bg-card p-8 text-center">
-          <h1 className="font-display text-5xl uppercase leading-none">INVALID CHECKOUT.</h1>
+          <h1 className="font-display text-5xl uppercase leading-none">CONFIRMING PAYMENT…</h1>
           <p className="mt-5 text-muted-foreground">
-            This payment link is missing its checkout session reference.
+            Your payment may still be processing. Check the shirt in a moment — your space appears
+            after confirmation.
           </p>
           <Link
             href="/"
             className="mt-7 inline-flex h-12 items-center justify-center bg-foreground px-6 font-display text-base tracking-wide text-background"
           >
-            BACK TO THE SHIRT
+            VIEW THE SHIRT
           </Link>
         </div>
       )}

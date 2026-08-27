@@ -105,3 +105,27 @@ export function getCheckoutBaseUrl(request: Request) {
   if (configured) return configured.replace(/\/+$/, "");
   return new URL(request.url).origin;
 }
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isCheckoutSessionId(value: string) {
+  return (
+    value.length > 0 &&
+    value.length <= 255 &&
+    (value.startsWith("cks_") || value.startsWith("cs_"))
+  );
+}
+
+export function isPaymentId(value: string) {
+  return value.length > 0 && value.length <= 255 && value.startsWith("pay_");
+}
+
+export function isPlacementId(value: string) {
+  return UUID_RE.test(value);
+}
+
+export function isCheckoutReference(value: string | undefined) {
+  if (!value) return false;
+  return isPlacementId(value) || isCheckoutSessionId(value) || isPaymentId(value);
+}

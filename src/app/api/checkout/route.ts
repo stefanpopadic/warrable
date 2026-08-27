@@ -56,6 +56,9 @@ export async function POST(request: Request) {
     const amountCents = Number(reservation.amount_cents);
     const pixelCount = Number(reservation.pixel_count);
 
+    const successReturnUrl = new URL(`${baseUrl}/checkout/success`);
+    successReturnUrl.searchParams.set("placement_id", placementId);
+
     const session = await getDodo().checkoutSessions.create({
       product_cart: [
         {
@@ -74,7 +77,7 @@ export async function POST(request: Request) {
         pixel_count: String(pixelCount),
         brand_name: input.brandName,
       },
-      return_url: `${baseUrl}/checkout/success`,
+      return_url: successReturnUrl.toString(),
     });
 
     if (!session.session_id || !session.checkout_url) {

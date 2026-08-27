@@ -10,6 +10,7 @@ import {
   type Rect,
 } from "@/lib/auction";
 import type { ArtboardSnapshot } from "@/lib/artboard-data";
+import { isPlacementId } from "@/lib/checkout";
 
 type ReservationRow = {
   id: string;
@@ -254,22 +255,40 @@ export async function markCheckoutEnded(input: {
   return (rows[0]?.creative_pathname as string | null | undefined) ?? null;
 }
 
-export async function getCheckoutStatus(sessionId: string) {
+export async function getPlacementCheckoutStatus(reference: string) {
   const sql = getSql();
-  const rows = asRows<Record<string, unknown>>(await sql`
-    SELECT
-      id,
-      brand_name,
-      website_url,
-      creative_url,
-      status,
-      amount_cents,
-      pixel_count,
-      paid_at
-    FROM placements
-    WHERE checkout_session_id = ${sessionId}
-    LIMIT 1
-  `);
+  const rows = isPlacementId(reference)
+    ? ((await sql`
+        SELECT
+          id,
+          brand_name,
+          website_url,
+          creative_url,
+          status,
+          amount_cents,
+          pixel_count,
+          paid_at
+        FROM placements
+        WHERE id = ${reference}::uuid
+           OR checkout_session_id = ${reference}
+           OR payment_id = ${reference}
+        LIMIT 1
+      `) as Record<string, unknown>[])
+    : ((await sql`
+        SELECT
+          id,
+          brand_name,
+          website_url,
+          creative_url,
+          status,
+          amount_cents,
+          pixel_count,
+          paid_at
+        FROM placements
+        WHERE checkout_session_id = ${reference}
+           OR payment_id = ${reference}
+        LIMIT 1
+      `) as Record<string, unknown>[]);
 
   return rows[0] ?? null;
 }
