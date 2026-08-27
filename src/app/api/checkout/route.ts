@@ -64,6 +64,10 @@ export async function POST(request: Request) {
           amount: amountCents,
         },
       ],
+      billing_currency: "USD",
+      feature_flags: {
+        allow_currency_selection: false,
+      },
       metadata: {
         placement_id: placementId,
         amount_cents: String(amountCents),

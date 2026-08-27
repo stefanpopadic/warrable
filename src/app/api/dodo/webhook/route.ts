@@ -51,9 +51,10 @@ async function processPaymentSucceeded(
   const placement = await getPlacementForPayment(placementId);
   if (!placement) return;
 
+  const metadataAmountCents = Number(payment.metadata?.amount_cents);
   const amountMatches =
-    payment.currency?.toUpperCase() === "USD" &&
-    Number(placement.amount_cents) === payment.total_amount;
+    Number.isFinite(metadataAmountCents) &&
+    Number(placement.amount_cents) === metadataAmountCents;
 
   const sessionId = placement.checkout_session_id ?? payment.payment_id;
   const details = {
