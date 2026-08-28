@@ -307,7 +307,7 @@ function TShirtPreview({
           className="absolute overflow-hidden bg-[#0a0a0a] ring-1 ring-white/10 shadow-inner"
           style={{
             left: "18%",
-            top: "calc(17% + 50px)",
+            top: "22%",
             width: "63%",
             aspectRatio: `${viewport.w} / ${viewport.h}`,
           }}
