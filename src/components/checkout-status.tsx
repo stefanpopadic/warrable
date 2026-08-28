@@ -70,7 +70,7 @@ export function CheckoutStatusPanel({ reference }: { reference: string }) {
   return (
     <div className="w-full max-w-lg border border-border bg-card p-6 text-center sm:p-8">
       <p className="font-condensed text-xs uppercase tracking-[0.24em] text-muted-foreground">
-        Dodo Payments
+        Stripe
       </p>
       <h1 className="mt-4 font-display text-5xl uppercase leading-none">
         {paid
@@ -89,7 +89,7 @@ export function CheckoutStatusPanel({ reference }: { reference: string }) {
         </p>
       ) : review ? (
         <p className="mx-auto mt-5 max-w-sm text-base leading-relaxed text-muted-foreground">
-          Dodo confirmed the payment, but the placement needs a manual safety check. No second
+          Stripe confirmed the payment, but the placement needs a manual safety check. No second
           payment is required.
         </p>
       ) : failed ? (
@@ -98,8 +98,8 @@ export function CheckoutStatusPanel({ reference }: { reference: string }) {
         </p>
       ) : (
         <p className="mx-auto mt-5 max-w-sm text-base leading-relaxed text-muted-foreground">
-          The placement appears only after the signed Dodo webhook confirms payment. This
-          normally takes a few seconds.
+          The placement appears only after Stripe confirms payment. This normally takes a few
+          seconds.
         </p>
       )}
 

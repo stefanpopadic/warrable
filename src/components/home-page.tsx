@@ -3,7 +3,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { BuyButton, PageShell } from "@/components/page-shell";
-import { usd, formatPixelPrice } from "@/lib/artboard";
+import { usd, formatPixelPrice, faviconUrlForWebsite } from "@/lib/artboard";
+import { recordPlacementClick } from "@/lib/placement-clicks";
 import { AUCTION_END } from "@/lib/auction";
 import type { ArtboardSnapshot, LeaderboardEntry } from "@/lib/artboard-data";
 
@@ -30,14 +31,6 @@ function Countdown() {
   })();
   return (
     <div className="mx-auto w-full max-w-xl">
-      <div className="mb-3 flex items-center gap-4">
-        <span className="h-px flex-1 bg-border" />
-        <p className="shrink-0 font-condensed text-[11px] uppercase tracking-[0.3em] text-muted-foreground">
-          Auction closes in
-        </p>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-
       <div className="flex items-center">
         {parts.map(([label, value], index) => (
           <Fragment key={label}>
@@ -62,8 +55,59 @@ function Countdown() {
   );
 }
 
+function LeaderboardLogo({
+  websiteUrl,
+  creativeUrl,
+  brand,
+  rank,
+  isFirst,
+}: {
+  websiteUrl: string;
+  creativeUrl: string;
+  brand: string;
+  rank: number;
+  isFirst: boolean;
+}) {
+  const favicon = faviconUrlForWebsite(websiteUrl);
+  const [src, setSrc] = useState<string | null>(favicon);
+  const [showRank, setShowRank] = useState(!favicon);
+
+  const tileClass = `flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-sm sm:h-12 sm:w-12`;
+
+  if (showRank || !src) {
+    return (
+      <span
+        className={`${tileClass} font-display text-lg leading-none sm:text-xl ${
+          isFirst ? "text-black" : "text-foreground"
+        }`}
+      >
+        {String(rank).padStart(2, "0")}
+      </span>
+    );
+  }
+
+  return (
+    <span className={tileClass}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={`${brand} logo`}
+        className="h-full w-full object-contain"
+        onError={() => {
+          if (creativeUrl && src !== creativeUrl) {
+            setSrc(creativeUrl);
+            return;
+          }
+          setShowRank(true);
+        }}
+      />
+    </span>
+  );
+}
+
 function LeaderboardTable({ leaderboard }: { leaderboard: LeaderboardEntry[] }) {
   const [expanded, setExpanded] = useState(false);
+  const [clickBoost, setClickBoost] = useState<Record<string, number>>({});
   const visible = expanded ? leaderboard : leaderboard.slice(0, 10);
   return (
     <div className="mt-2">
@@ -73,10 +117,17 @@ function LeaderboardTable({ leaderboard }: { leaderboard: LeaderboardEntry[] }) 
           const isFirst = r.rank === 1;
           return (
             <a
-              key={r.rank}
+              key={r.id}
               href={r.url}
               target="_blank"
               rel="noreferrer"
+              onClick={() => {
+                recordPlacementClick(r.id);
+                setClickBoost((prev) => ({
+                  ...prev,
+                  [r.id]: (prev[r.id] ?? 0) + 1,
+                }));
+              }}
               className={`group grid grid-cols-[3rem_minmax(0,1fr)_auto] items-stretch border-b transition-[background-color,opacity] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-yellow sm:grid-cols-[3.75rem_minmax(0,1fr)_auto] ${
                 isFirst
                   ? "border-black/20 bg-white text-black hover:bg-accent-yellow"
@@ -94,18 +145,13 @@ function LeaderboardTable({ leaderboard }: { leaderboard: LeaderboardEntry[] }) 
                   isFirst ? "border-black/20" : "border-white/20"
                 }`}
               >
-                {r.logo ? (
-                  <span className="h-10 w-10 overflow-hidden rounded-sm sm:h-12 sm:w-12">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={r.logo}
-                      alt={`${r.brand} logo`}
-                      className="h-full w-full object-cover"
-                    />
-                  </span>
-                ) : (
-                  String(r.rank).padStart(2, "0")
-                )}
+                <LeaderboardLogo
+                  websiteUrl={r.url}
+                  creativeUrl={r.creative}
+                  brand={r.brand}
+                  rank={r.rank}
+                  isFirst={isFirst}
+                />
               </span>
               <div className="flex min-w-0 items-center self-center px-3 py-3 sm:px-4">
                 <div className="min-w-0">
@@ -147,7 +193,8 @@ function LeaderboardTable({ leaderboard }: { leaderboard: LeaderboardEntry[] }) 
                     isFirst ? "text-black/60" : "text-muted-foreground"
                   }`}
                 >
-                  {r.pixels.toLocaleString()} px
+                  {r.pixels.toLocaleString()} px ·{" "}
+                  {(r.linkClicks + (clickBoost[r.id] ?? 0)).toLocaleString()} clicks
                 </span>
               </div>
             </a>
@@ -473,17 +520,16 @@ function HomeContent({
             T-SHIRT.
           </h1>
           <p className="mx-auto mt-5 max-w-md text-center text-lg text-muted-foreground">
-            Every pixel is an auction. Buy space on a real shirt, promote your brand, and become part of
-            internet history.
+            Buy space on a real shirt, promote your brand, and become part of internet history.
           </p>
 
           <div className="mt-8 flex flex-col items-center">
-            <div className="w-full text-center">
+            {!snapshot.auctionClosed && (
+              <BuyButton className="bg-foreground px-7 py-3 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground" />
+            )}
+            <div className={`${snapshot.auctionClosed ? "" : "mt-8"} w-full text-center`}>
               <Countdown />
             </div>
-            {!snapshot.auctionClosed && (
-              <BuyButton className="mt-8 bg-foreground px-7 py-3 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground" />
-            )}
           </div>
 
           <dl className="mt-8 grid grid-cols-3 border-y border-border">

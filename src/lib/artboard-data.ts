@@ -1,5 +1,11 @@
-import { AUCTION_END, CELL_PX, COLS, ROWS, TOTAL_PIXELS, pricePerPixelCents, nextPricePerPixelCents, pixelsUntilNextTier } from "@/lib/auction";
-import type { Rect } from "@/lib/auction";
+import {
+  AUCTION_END,
+  getMilestoneState,
+  pricePerPixelCents,
+  nextPricePerPixelCents,
+  pixelsUntilNextTier,
+} from "@/lib/auction";
+import type { MilestoneState, Rect } from "@/lib/auction";
 
 export type PublicPlacement = Rect & {
   id: string;
@@ -19,11 +25,14 @@ export type OccupiedRect = Rect & {
 
 export type LeaderboardEntry = {
   rank: number;
+  id: string;
   brand: string;
   url: string;
-  logo: string;
+  logo: string | null;
+  creative: string;
   bidCents: number;
   pixels: number;
+  linkClicks: number;
 };
 
 export type ArtboardSnapshot = {
@@ -37,23 +46,26 @@ export type ArtboardSnapshot = {
     nextPriceCents: number | null;
     pixelsUntilNextTier: number;
   };
+  milestone: MilestoneState;
   leaderboard: LeaderboardEntry[];
   auctionClosed: boolean;
   auctionEnd: string;
 };
 
 export function emptyArtboardSnapshot(): ArtboardSnapshot {
+  const milestone = getMilestoneState(0);
   return {
     placements: [],
     occupied: [],
     stats: {
       raisedCents: 0,
       pixelsSold: 0,
-      pixelsTotal: TOTAL_PIXELS,
+      pixelsTotal: milestone.capacityPixels,
       currentPriceCents: pricePerPixelCents(0),
       nextPriceCents: nextPricePerPixelCents(0),
       pixelsUntilNextTier: pixelsUntilNextTier(0),
     },
+    milestone,
     leaderboard: [],
     auctionClosed: false,
     auctionEnd: new Date(AUCTION_END).toISOString(),

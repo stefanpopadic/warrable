@@ -4,11 +4,12 @@ import { ZodError } from "zod";
 import {
   attachCheckoutSession,
   attachCreative,
+  getCurrentViewport,
   releasePlacement,
   reservePlacement,
 } from "@/db/placements";
 import { getCheckoutBaseUrl, getRequesterHash, parseCheckoutFormData } from "@/lib/checkout";
-import { getDodo, getPlacementProductId } from "@/lib/dodo";
+import { getStripe } from "@/lib/stripe";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -26,7 +27,8 @@ export async function POST(request: Request) {
   let blobPathname: string | null = null;
 
   try {
-    const input = await parseCheckoutFormData(await request.formData());
+    const viewport = await getCurrentViewport();
+    const input = await parseCheckoutFormData(await request.formData(), viewport);
     const requesterHash = getRequesterHash(request);
     const reservation = await reservePlacement({
       brandName: input.brandName,
@@ -59,34 +61,40 @@ export async function POST(request: Request) {
     const successReturnUrl = new URL(`${baseUrl}/checkout/success`);
     successReturnUrl.searchParams.set("placement_id", placementId);
 
-    const session = await getDodo().checkoutSessions.create({
-      product_cart: [
+    const session = await getStripe().checkout.sessions.create({
+      mode: "payment",
+      adaptive_pricing: { enabled: false },
+      line_items: [
         {
-          product_id: getPlacementProductId(),
           quantity: 1,
-          amount: amountCents,
+          price_data: {
+            currency: "usd",
+            unit_amount: amountCents,
+            product_data: {
+              name: `Shirt space — ${input.brandName}`,
+              description: `${pixelCount.toLocaleString()} pixels on Million Dollar T-Shirt`,
+            },
+          },
         },
       ],
-      billing_currency: "USD",
-      feature_flags: {
-        allow_currency_selection: false,
-      },
       metadata: {
         placement_id: placementId,
         amount_cents: String(amountCents),
         pixel_count: String(pixelCount),
         brand_name: input.brandName,
       },
-      return_url: successReturnUrl.toString(),
+      success_url: `${successReturnUrl.toString()}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/checkout/cancel`,
+      expires_at: Math.floor(expiresAt.getTime() / 1000),
     });
 
-    if (!session.session_id || !session.checkout_url) {
+    if (!session.id || !session.url) {
       throw new Error("checkout_url_missing");
     }
 
-    await attachCheckoutSession(placementId, session.session_id, expiresAt);
+    await attachCheckoutSession(placementId, session.id, expiresAt);
 
-    return Response.json({ checkoutUrl: session.checkout_url }, { status: 201 });
+    return Response.json({ checkoutUrl: session.url }, { status: 201 });
   } catch (error) {
     if (placementId) {
       try {
@@ -127,6 +135,12 @@ export async function POST(request: Request) {
     if (message.includes("placement_overlap")) {
       return apiError("That space was just reserved. Choose another position.", 409);
     }
+    if (message.includes("outside_viewport")) {
+      return apiError(
+        "The shirt just grew to a new milestone. Refresh and pick your spot again.",
+        409,
+      );
+    }
     if (message.includes("rate_limited")) {
       return apiError("Too many checkout attempts. Try again in an hour.", 429);
     }
@@ -135,7 +149,7 @@ export async function POST(request: Request) {
     }
     if (
       message.includes("not configured") ||
-      message.includes("DODO_PAYMENTS") ||
+      message.includes("STRIPE_SECRET_KEY") ||
       message.includes("BLOB_READ_WRITE_TOKEN")
     ) {
       return apiError("Checkout is not configured yet.", 503);

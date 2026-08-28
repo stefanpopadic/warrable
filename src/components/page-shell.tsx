@@ -10,6 +10,7 @@ import {
 } from "react";
 import Link from "next/link";
 import Artboard from "@/components/artboard";
+import { SiteStatsPill } from "@/components/site-stats-pill";
 import type { ArtboardSnapshot } from "@/lib/artboard-data";
 
 const BuyPanelContext = createContext<{
@@ -90,7 +91,7 @@ export function PageShell({
           }`}
         >
           <header className="sticky top-0 z-10 border-b border-border bg-background/95 px-6 py-3 backdrop-blur lg:px-8">
-            <nav className="flex items-center justify-between gap-4">
+            <nav className="flex items-center justify-between gap-3">
               <Link href="/" className="shrink-0">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -99,6 +100,10 @@ export function PageShell({
                   className="h-6 w-auto object-contain object-left"
                 />
               </Link>
+
+              <div className="hidden min-w-0 flex-1 justify-center lg:flex">
+                <SiteStatsPill />
+              </div>
 
               <button
                 type="button"
@@ -116,13 +121,27 @@ export function PageShell({
             <div className="mx-auto max-w-3xl">
               <p>milliondollartshirt.lol</p>
               <p className="mt-1">An internet experiment. Printed on one black shirt.</p>
+              <nav aria-label="Legal" className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
+                <Link href="/rules" className="hover:text-foreground">
+                  Rules
+                </Link>
+                <Link href="/terms" className="hover:text-foreground">
+                  Terms
+                </Link>
+                <Link href="/privacy" className="hover:text-foreground">
+                  Privacy
+                </Link>
+                <Link href="/about" className="hover:text-foreground">
+                  About
+                </Link>
+              </nav>
             </div>
           </footer>
         </div>
 
         <aside
           id="artboard"
-          className={`relative h-[80vh] min-h-0 w-full overflow-hidden border-t border-border bg-black transition-[left] duration-500 ease-out lg:absolute lg:top-0 lg:bottom-0 lg:h-auto lg:w-auto lg:border-t-0 ${
+          className={`relative min-h-[min(72vh,640px)] w-full overflow-hidden border-t border-border bg-black transition-[left] duration-500 ease-out lg:absolute lg:top-0 lg:bottom-0 lg:min-h-0 lg:h-auto lg:w-auto lg:border-t-0 ${
             buying ? "lg:left-0 lg:right-0" : "lg:left-1/2 lg:right-0"
           }`}
         >
@@ -139,6 +158,20 @@ export function PageShell({
         <footer className="border-t border-border px-6 py-6 font-condensed text-xs uppercase tracking-widest text-muted-foreground lg:hidden">
           <p>milliondollartshirt.lol</p>
           <p className="mt-1">An internet experiment. Printed on one black shirt.</p>
+          <nav aria-label="Legal" className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
+            <Link href="/rules" className="hover:text-foreground">
+              Rules
+            </Link>
+            <Link href="/terms" className="hover:text-foreground">
+              Terms
+            </Link>
+            <Link href="/privacy" className="hover:text-foreground">
+              Privacy
+            </Link>
+            <Link href="/about" className="hover:text-foreground">
+              About
+            </Link>
+          </nav>
         </footer>
       </main>
     </BuyPanelContext.Provider>

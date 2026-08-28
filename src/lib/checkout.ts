@@ -3,7 +3,7 @@ import "server-only";
 import { createHmac } from "node:crypto";
 import { fileTypeFromBuffer } from "file-type";
 import { z } from "zod";
-import { isRectInBounds, type Rect } from "@/lib/auction";
+import { isRectInViewport, viewportForLevel, type Rect } from "@/lib/auction";
 
 const MAX_CREATIVE_BYTES = 4 * 1024 * 1024;
 const ACCEPTED_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -43,7 +43,10 @@ function normalizeWebsite(value: string) {
   return normalized;
 }
 
-export async function parseCheckoutFormData(formData: FormData) {
+export async function parseCheckoutFormData(
+  formData: FormData,
+  viewport: Rect = viewportForLevel(0),
+) {
   const parsed = checkoutFields.parse({
     brand: formData.get("brand"),
     website: formData.get("website"),
@@ -56,7 +59,7 @@ export async function parseCheckoutFormData(formData: FormData) {
   });
   const rect: Rect = { x: parsed.x, y: parsed.y, w: parsed.w, h: parsed.h };
 
-  if (!isRectInBounds(rect)) {
+  if (!isRectInViewport(rect, viewport)) {
     throw new Error("The selected area is outside the artboard.");
   }
 
@@ -110,15 +113,11 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function isCheckoutSessionId(value: string) {
-  return (
-    value.length > 0 &&
-    value.length <= 255 &&
-    (value.startsWith("cks_") || value.startsWith("cs_"))
-  );
+  return value.length > 0 && value.length <= 255 && value.startsWith("cs_");
 }
 
 export function isPaymentId(value: string) {
-  return value.length > 0 && value.length <= 255 && value.startsWith("pay_");
+  return value.length > 0 && value.length <= 255 && value.startsWith("pi_");
 }
 
 export function isPlacementId(value: string) {

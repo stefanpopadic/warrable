@@ -1,34 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Upload, X, AlertCircle, Shuffle, Trophy } from "lucide-react";
 import {
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
-  Focus,
-  Maximize2,
-  Upload,
-  X,
-} from "lucide-react";
-import {
-  COLS,
-  ROWS,
   CELL_PX,
   formatPixelPrice,
   usd,
 } from "@/lib/artboard";
-import { MIN_PRINTED_PIXELS, amountCentsForPixels, pixelsForBudget } from "@/lib/auction";
+import {
+  MIN_PRINTED_PIXELS,
+  amountCentsForPixels,
+  pixelsForBudget,
+  findAutoStackPlacement,
+  freeCellsInViewport,
+  isRectInViewport,
+  rectsOverlap,
+  type Rect,
+} from "@/lib/auction";
 import type { ArtboardSnapshot } from "@/lib/artboard-data";
 import { emptyArtboardSnapshot } from "@/lib/artboard-data";
+import { recordPlacementClick } from "@/lib/placement-clicks";
+import { ShirtQRCode } from "@/components/qr-center";
 
-type Sel = { x: number; y: number; w: number; h: number } | null;
-type ResizeCorner = "nw" | "ne" | "sw" | "se";
-type SelectionTransform = {
-  mode: "move" | ResizeCorner;
-  start: { x: number; y: number };
-  initial: NonNullable<Sel>;
-};
+type Sel = Rect | null;
 
 const EMPTY_SNAPSHOT = emptyArtboardSnapshot();
 
@@ -41,95 +35,215 @@ type Props = {
   snapshotReady?: boolean;
 };
 
-type ViewMode = "bidding" | "shirt";
+/** Position a world-space rect as a percentage of the unlocked viewport. */
+function viewportStyle(rect: Rect, viewport: Rect) {
+  return {
+    left: `${((rect.x - viewport.x) / viewport.w) * 100}%`,
+    top: `${((rect.y - viewport.y) / viewport.h) * 100}%`,
+    width: `${(rect.w / viewport.w) * 100}%`,
+    height: `${(rect.h / viewport.h) * 100}%`,
+  };
+}
 
-const pct = (n: number, total: number) => `${(n / total) * 100}%`;
+const CORNERS = ["nw", "ne", "sw", "se"] as const;
+type Corner = (typeof CORNERS)[number];
+
+const CORNER_STYLES: Record<Corner, string> = {
+  nw: "-left-1 -top-1 cursor-nwse-resize",
+  ne: "-right-1 -top-1 cursor-nesw-resize",
+  sw: "-left-1 -bottom-1 cursor-nesw-resize",
+  se: "-right-1 -bottom-1 cursor-nwse-resize",
+};
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function moveRect(rect: Rect, dx: number, dy: number, viewport: Rect): Rect {
+  return {
+    ...rect,
+    x: clamp(rect.x + dx, viewport.x, viewport.x + viewport.w - rect.w),
+    y: clamp(rect.y + dy, viewport.y, viewport.y + viewport.h - rect.h),
+  };
+}
+
+/** Drag a corner while the opposite corner stays pinned. Never smaller than one cell. */
+function resizeRect(rect: Rect, corner: Corner, dx: number, dy: number, viewport: Rect): Rect {
+  const right = rect.x + rect.w;
+  const bottom = rect.y + rect.h;
+  const maxX = viewport.x + viewport.w;
+  const maxY = viewport.y + viewport.h;
+
+  let { x, y, w, h } = rect;
+
+  if (corner === "nw" || corner === "sw") {
+    x = clamp(rect.x + dx, viewport.x, right - 1);
+    w = right - x;
+  } else {
+    w = clamp(rect.w + dx, 1, maxX - rect.x);
+  }
+
+  if (corner === "nw" || corner === "ne") {
+    y = clamp(rect.y + dy, viewport.y, bottom - 1);
+    h = bottom - y;
+  } else {
+    h = clamp(rect.h + dy, 1, maxY - rect.y);
+  }
+
+  return { x, y, w, h };
+}
+
+type DragState = {
+  kind: "move" | "resize";
+  corner: Corner;
+  pointerX: number;
+  pointerY: number;
+  origin: Rect;
+};
 
 function ArtboardGrid({
   placements,
   sel,
   creative,
   creativeFit,
-  interactive = false,
-  onStartSelectionTransform,
+  hoveredPlacement,
+  setHoveredPlacement,
+  viewport,
+  interactive,
+  onSelChange,
 }: {
   placements: ArtboardSnapshot["placements"];
   sel: Sel;
   creative: string | null;
   creativeFit: "contain" | "cover";
-  interactive?: boolean;
-  onStartSelectionTransform?: (e: PointerEvent, mode: SelectionTransform["mode"]) => void;
+  hoveredPlacement: ArtboardSnapshot["placements"][number] | null;
+  setHoveredPlacement: (p: ArtboardSnapshot["placements"][number] | null) => void;
+  viewport: Rect;
+  interactive: boolean;
+  onSelChange: (rect: Rect) => void;
 }) {
-  return (
-    <>
-      {placements.map((b) => (
-        <a
-          key={b.id}
-          href={b.url}
-          target="_blank"
-          rel="noreferrer"
-          title={`${b.brand} — ${usd(b.bidCents)}`}
-          aria-label={`${b.brand}, ${usd(b.bidCents)}`}
-          onPointerDown={(e) => e.stopPropagation()}
-          className="absolute overflow-hidden ring-1 ring-white/20 hover:z-20 hover:ring-2 hover:ring-white"
-          style={{
-            left: pct(b.x, COLS),
-            top: pct(b.y, ROWS),
-            width: pct(b.w, COLS),
-            height: pct(b.h, ROWS),
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={b.creative}
-            alt={`${b.brand} creative`}
-            className="h-full w-full object-cover"
-          />
-        </a>
-      ))}
+  const gridRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const [dragging, setDragging] = useState(false);
 
+  const beginDrag = (event: React.PointerEvent, kind: DragState["kind"], corner: Corner) => {
+    if (!interactive || !sel) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      kind,
+      corner,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      origin: sel,
+    };
+    setDragging(true);
+  };
+
+  const continueDrag = (event: React.PointerEvent) => {
+    const drag = dragRef.current;
+    const box = gridRef.current?.getBoundingClientRect();
+    if (!drag || !box || box.width === 0 || box.height === 0) return;
+
+    const dx = Math.round((event.clientX - drag.pointerX) / (box.width / viewport.w));
+    const dy = Math.round((event.clientY - drag.pointerY) / (box.height / viewport.h));
+
+    const next =
+      drag.kind === "move"
+        ? moveRect(drag.origin, dx, dy, viewport)
+        : resizeRect(drag.origin, drag.corner, dx, dy, viewport);
+
+    // Reject rather than clamp on collision, so the box sticks at the last legal
+    // spot instead of tunnelling through a sold logo.
+    if (placements.some((p) => rectsOverlap(next, p))) return;
+    onSelChange(next);
+  };
+
+  const endDrag = (event: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setDragging(false);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  return (
+    <div ref={gridRef} className="absolute inset-0">
+      {/* Existing Placements */}
+      {placements.map((b) => {
+        const isHovered = hoveredPlacement?.id === b.id;
+        return (
+          <a
+            key={b.id}
+            href={b.url}
+            target="_blank"
+            rel="noreferrer"
+            title={`${b.brand} — ${usd(b.bidCents)}`}
+            aria-label={`${b.brand}, ${usd(b.bidCents)}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseEnter={() => setHoveredPlacement(b)}
+            onMouseLeave={() => setHoveredPlacement(null)}
+            onClick={() => recordPlacementClick(b.id)}
+            className={`absolute overflow-hidden transition-all duration-700 ease-out ${
+              isHovered
+                ? "z-30 ring-2 ring-white scale-[1.03] shadow-lg shadow-white/20"
+                : "ring-1 ring-white/15 hover:z-20 hover:ring-2 hover:ring-white"
+            }`}
+            style={viewportStyle(b, viewport)}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={b.creative}
+              alt={`${b.brand} creative`}
+              className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain p-1.5"} bg-black/50 transition-transform duration-150`}
+            />
+          </a>
+        );
+      })}
+
+      {/* User Selection Preview — draggable and resizable while the buy panel is open */}
       {sel && (
         <div
-          className={`group absolute z-10 border-2 border-white ${
-            interactive ? "cursor-move" : "pointer-events-none"
-          } ${creative ? "bg-transparent" : "bg-white/15"}`}
-          style={{
-            left: pct(sel.x, COLS),
-            top: pct(sel.y, ROWS),
-            width: pct(sel.w, COLS),
-            height: pct(sel.h, ROWS),
-          }}
-          onPointerDown={interactive && onStartSelectionTransform ? (e) => onStartSelectionTransform(e, "move") : undefined}
+          onPointerDown={(e) => beginDrag(e, "move", "se")}
+          onPointerMove={continueDrag}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          className={`absolute z-25 border-2 border-[var(--accent-yellow)] bg-[var(--accent-yellow)]/10 shadow-[0_0_15px_rgba(255,230,0,0.4)] ${
+            interactive
+              ? `touch-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`
+              : "pointer-events-none animate-pulse overflow-hidden"
+          }`}
+          style={viewportStyle(sel, viewport)}
         >
-          {creative && (
+          {creative ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={creative}
-              alt="Your creative preview"
-              className="pointer-events-none h-full w-full object-cover"
+              alt="Your logo preview"
+              draggable={false}
+              className={`h-full w-full select-none ${creativeFit === "cover" ? "object-cover" : "object-contain"}`}
             />
+          ) : (
+            <div className="flex h-full w-full select-none items-center justify-center overflow-hidden bg-[var(--accent-yellow)]/20 p-1 text-center font-display text-[9px] font-bold uppercase tracking-wider text-[var(--accent-yellow)]">
+              YOUR SPOT
+            </div>
           )}
+
           {interactive &&
-            onStartSelectionTransform &&
-            (
-              [
-                ["nw", "-left-2 -top-2 cursor-nwse-resize", "Resize from top left"],
-                ["ne", "-right-2 -top-2 cursor-nesw-resize", "Resize from top right"],
-                ["sw", "-bottom-2 -left-2 cursor-nesw-resize", "Resize from bottom left"],
-                ["se", "-bottom-2 -right-2 cursor-nwse-resize", "Resize from bottom right"],
-              ] as const
-            ).map(([corner, position, label]) => (
-              <button
+            CORNERS.map((corner) => (
+              <span
                 key={corner}
-                type="button"
-                aria-label={label}
-                onPointerDown={(e) => onStartSelectionTransform(e, corner)}
-                className={`absolute z-20 h-4 w-4 rounded-full border-2 border-black bg-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${position}`}
+                role="presentation"
+                onPointerDown={(e) => beginDrag(e, "resize", corner)}
+                onPointerMove={continueDrag}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+                className={`absolute h-2.5 w-2.5 touch-none rounded-[1px] border border-black/70 bg-[var(--accent-yellow)] ${CORNER_STYLES[corner]}`}
               />
             ))}
         </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -138,19 +252,30 @@ function TShirtPreview({
   sel,
   creative,
   creativeFit,
+  hoveredPlacement,
+  setHoveredPlacement,
+  viewport,
+  interactive,
+  onSelChange,
 }: {
   placements: ArtboardSnapshot["placements"];
   sel: Sel;
   creative: string | null;
   creativeFit: "contain" | "cover";
+  hoveredPlacement: ArtboardSnapshot["placements"][number] | null;
+  setHoveredPlacement: (p: ArtboardSnapshot["placements"][number] | null) => void;
+  viewport: Rect;
+  interactive: boolean;
+  onSelChange: (rect: Rect) => void;
 }) {
   return (
-    <div className="flex h-full w-full items-center justify-center overflow-auto px-6 py-16">
-      <div className="relative w-[min(100%,380px)]">
+    <div className="relative flex h-full w-full items-center justify-center overflow-hidden px-4 py-6 sm:px-6 sm:py-8">
+      <div className="relative w-[min(100%,760px)]">
+        {/* T-Shirt Vector Mockup */}
         <svg
           viewBox="0 0 320 420"
           aria-hidden="true"
-          className="w-full drop-shadow-[0_24px_48px_rgba(0,0,0,0.55)]"
+          className="w-full drop-shadow-[0_24px_48px_rgba(0,0,0,0.65)]"
         >
           <path
             d="M72 36 Q160 18 248 36 L320 88 L296 132 L272 132 L272 392 L48 392 L48 132 L24 132 L0 88 Z"
@@ -178,13 +303,17 @@ function TShirtPreview({
           />
         </svg>
 
+        {/* Orange QR Code at top collar / nape area */}
+        <ShirtQRCode />
+
+        {/* Artboard Print Area on the back of shirt */}
         <div
-          className="absolute overflow-hidden bg-[#0b0b0b] ring-1 ring-white/10"
+          className="absolute overflow-hidden bg-[#0a0a0a] ring-1 ring-white/10 shadow-inner"
           style={{
             left: "18%",
-            top: "calc(17% + 10px)",
+            top: "calc(17% + 60px)",
             width: "63%",
-            aspectRatio: `${COLS} / ${ROWS}`,
+            aspectRatio: `${viewport.w} / ${viewport.h}`,
           }}
         >
           <div className="relative h-full w-full">
@@ -193,492 +322,257 @@ function TShirtPreview({
               sel={sel}
               creative={creative}
               creativeFit={creativeFit}
+              hoveredPlacement={hoveredPlacement}
+              setHoveredPlacement={setHoveredPlacement}
+              viewport={viewport}
+              interactive={interactive}
+              onSelChange={onSelChange}
             />
           </div>
         </div>
       </div>
+
+      {/* Floating Hover Info Pill */}
+      {hoveredPlacement && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-full border border-white/20 bg-black/90 px-4 py-2 text-center shadow-xl backdrop-blur">
+          <p className="font-display text-sm tracking-wide text-white">
+            {hoveredPlacement.brand}
+          </p>
+          <p className="font-condensed text-xs text-muted-foreground">
+            {hoveredPlacement.pixels.toLocaleString()} pixels · {usd(hoveredPlacement.bidCents)}
+          </p>
+        </div>
+      )}
     </div>
   );
-}
-
-function ViewTabs({
-  viewMode,
-  onChange,
-}: {
-  viewMode: ViewMode;
-  onChange: (mode: ViewMode) => void;
-}) {
-  const tabs: { id: ViewMode; label: string }[] = [
-    { id: "bidding", label: "Artboard" },
-    { id: "shirt", label: "Shirt" },
-  ];
-
-  return (
-    <div className="pointer-events-none absolute inset-x-0 top-4 z-30 flex justify-center px-4">
-      <div
-        role="tablist"
-        aria-label="Artboard view"
-        className="pointer-events-auto inline-flex items-stretch gap-1 rounded border border-border/50 bg-black/85 p-1 backdrop-blur"
-      >
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={viewMode === tab.id}
-            onClick={() => onChange(tab.id)}
-            className={`inline-flex h-10 min-w-[5.5rem] items-center justify-center px-4 font-condensed text-xs uppercase leading-none tracking-widest transition-colors ${
-              viewMode === tab.id
-                ? "bg-foreground text-background"
-                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
-
-function planRect(cells: number) {
-  const c = Math.max(1, Math.round(cells));
-  let best = { w: 1, h: c, score: Infinity };
-  for (let w = 1; w <= COLS; w++) {
-    const h = Math.ceil(c / w);
-    if (h > ROWS) continue;
-    const score = w * h - c + Math.abs(Math.log(w / h / 1.25)) * 3;
-    if (score < best.score) best = { w, h, score };
-  }
-  return { w: best.w, h: best.h };
 }
 
 export default function Artboard({
   className = "",
   buyOpen = false,
   onClose,
-  onStartDraw,
   initialSnapshot,
-  snapshotReady: initialReady = false,
+  snapshotReady = false,
 }: Props) {
-  const ref = useRef<HTMLDivElement>(null);
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const [sel, setSel] = useState<Sel>(null);
-  const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
-  const selectionTransform = useRef<SelectionTransform | null>(null);
+  const [snapshot, setSnapshot] = useState<ArtboardSnapshot>(
+    initialSnapshot ?? EMPTY_SNAPSHOT,
+  );
   const [creative, setCreative] = useState<string | null>(null);
   const [creativeFile, setCreativeFile] = useState<File | null>(null);
-  const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("cover");
-  const [creativeAspect, setCreativeAspect] = useState(1);
-  const [snapshot, setSnapshot] = useState(initialSnapshot ?? EMPTY_SNAPSHOT);
+  const [creativeAspect, setCreativeAspect] = useState<number>(1.0);
+  const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("contain");
   const [brand, setBrand] = useState("");
   const [url, setUrl] = useState("");
-  const [hint, setHint] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(2);
-  const [spaceDown, setSpaceDown] = useState(false);
-  const [panning, setPanning] = useState(false);
-  const panStart = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(
-    null,
-  );
-  const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const pinch = useRef<{ dist: number; zoom: number } | null>(null);
-  const [base, setBase] = useState<{ w: number; h: number } | null>(null);
-  const [buyStep, setBuyStep] = useState<1 | 2>(1);
   const [amount, setAmount] = useState("25");
+  const [bidFocused, setBidFocused] = useState(false);
   const [pixels, setPixels] = useState(String(MIN_PRINTED_PIXELS));
-  const [autoNote, setAutoNote] = useState<string | null>(null);
+  const [variationIndex, setVariationIndex] = useState(0);
+  const [manualSel, setManualSel] = useState<Sel>(null);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>("bidding");
+  const [hint, setHint] = useState<string | null>(null);
+  const [hoveredPlacement, setHoveredPlacement] = useState<ArtboardSnapshot["placements"][number] | null>(null);
 
-  const loadSnapshot = useCallback(async () => {
-    const response = await fetch("/api/artboard", { cache: "no-store" });
-    if (!response.ok) throw new Error("Artboard availability could not be refreshed.");
-    const data = (await response.json()) as ArtboardSnapshot;
-    setSnapshot(data);
-    return data;
-  }, []);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    let active = true;
-    const refresh = async () => {
-      try {
-        if (active) await loadSnapshot();
-      } catch (error) {
-        if (active) setHint(error instanceof Error ? error.message : "Artboard is unavailable.");
-      }
-    };
-    void refresh();
-    const interval = window.setInterval(refresh, 15_000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [loadSnapshot]);
+    if (initialSnapshot) {
+      setSnapshot(initialSnapshot);
+    }
+  }, [initialSnapshot]);
 
-  useEffect(
-    () => () => {
-      if (creative?.startsWith("blob:")) URL.revokeObjectURL(creative);
-    },
-    [creative],
+  const viewport = snapshot.milestone.viewport;
+
+  // Existing placed rects for collision calculation
+  const placedRects: Rect[] = useMemo(() => {
+    return snapshot.placements.map((p) => ({
+      x: p.x,
+      y: p.y,
+      w: p.w,
+      h: p.h,
+    }));
+  }, [snapshot.placements]);
+
+  const freeCells = useMemo(
+    () => freeCellsInViewport(placedRects, viewport),
+    [placedRects, viewport],
   );
 
+  // Nobody can buy more than the current milestone has unlocked, so both inputs
+  // clamp to it rather than quoting a price for space that does not exist yet.
+  const maxPurchasablePx = Math.max(MIN_PRINTED_PIXELS, freeCells * CELL_PX * CELL_PX);
+
+  // Target pixels from input
+  const targetPx = useMemo(() => {
+    const raw = Number(pixels.replace(/[^0-9.]/g, "")) || 0;
+    return Math.min(maxPurchasablePx, Math.max(MIN_PRINTED_PIXELS, Math.round(raw)));
+  }, [pixels, maxPurchasablePx]);
+
+  // Target grid cells (1 cell = 100 printed pixels)
+  const targetCells = useMemo(() => {
+    return Math.max(1, Math.round(targetPx / (CELL_PX * CELL_PX)));
+  }, [targetPx]);
+
+  // Calculate auto-stack placement
+  const autoPlacedSel: Sel = useMemo(() => {
+    if (!buyOpen) return null;
+    return findAutoStackPlacement({
+      placements: placedRects,
+      targetCells,
+      creativeAspect,
+      variationIndex,
+      viewport,
+    });
+  }, [buyOpen, placedRects, targetCells, creativeAspect, variationIndex, viewport]);
+
+  // A hand-placed rect always wins over the auto-stacker until the buyer resets it.
+  const sel: Sel = manualSel ?? autoPlacedSel;
+
+  const effectivePixels = sel ? sel.w * sel.h * CELL_PX * CELL_PX : targetPx;
+
+  const totalCents = useMemo(() => {
+    return amountCentsForPixels(effectivePixels, snapshot.stats.pixelsSold);
+  }, [effectivePixels, snapshot.stats.pixelsSold]);
+
   useEffect(() => {
-    const vp = viewportRef.current;
-    if (!vp) return;
-    const measure = () => {
-      const r = vp.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2) return;
-      const rightPadding = Number.parseFloat(window.getComputedStyle(vp).paddingRight) || 0;
-      const availableWidth = Math.max(1, r.width - rightPadding);
-      const h = r.height;
-      const w = Math.min(availableWidth, (h * COLS) / ROWS);
-      setBase({ w, h: (w * ROWS) / COLS });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(vp);
-    return () => ro.disconnect();
+    if (!bidFocused) setAmount(String(totalCents / 100));
+  }, [bidFocused, totalCents]);
+
+  const topBidder = snapshot.leaderboard[0] ?? null;
+  const minimumPurchaseCents = amountCentsForPixels(
+    MIN_PRINTED_PIXELS,
+    snapshot.stats.pixelsSold,
+  );
+  const takesTopSpot = Boolean(topBidder && totalCents > topBidder.bidCents);
+  const topBidTarget = useMemo(() => {
+    if (!topBidder) return null;
+
+    // The logo's aspect ratio means not every cell count forms a valid rectangle.
+    // Find the first layout whose real checkout total beats the leader, so the CTA
+    // never promises one amount and produces another.
+    const firstCandidateCells = Math.max(
+      1,
+      Math.ceil(
+        pixelsForBudget(
+          topBidder.bidCents + minimumPurchaseCents,
+          snapshot.stats.pixelsSold,
+        ) /
+          (CELL_PX * CELL_PX),
+      ),
+    );
+
+    for (let cells = firstCandidateCells; cells <= freeCells; cells++) {
+      const placement = findAutoStackPlacement({
+        placements: placedRects,
+        targetCells: cells,
+        creativeAspect,
+        variationIndex,
+        viewport,
+      });
+      if (!placement) continue;
+
+      const placementPixels = placement.w * placement.h * CELL_PX * CELL_PX;
+      const placementCents = amountCentsForPixels(
+        placementPixels,
+        snapshot.stats.pixelsSold,
+      );
+      if (placementCents > topBidder.bidCents) {
+        return { cents: placementCents, pixels: placementPixels };
+      }
+    }
+
+    return null;
+  }, [
+    creativeAspect,
+    freeCells,
+    minimumPurchaseCents,
+    placedRects,
+    snapshot.stats.pixelsSold,
+    topBidder,
+    variationIndex,
+    viewport,
+  ]);
+
+  const clampPx = useCallback(
+    (px: number) => Math.min(maxPurchasablePx, Math.max(MIN_PRINTED_PIXELS, px)),
+    [maxPurchasablePx],
+  );
+
+  // Typing a budget or a pixel count means "size this for me", so it hands control
+  // back to the auto-stacker.
+  const syncFromAmount = useCallback(
+    (v: string) => {
+      setAmount(v);
+      setManualSel(null);
+      const dollars = Number(v.replace(/[^0-9.]/g, "")) || 0;
+      const px = pixelsForBudget(Math.round(dollars * 100), snapshot.stats.pixelsSold);
+      setPixels(String(clampPx(px)));
+    },
+    [snapshot.stats.pixelsSold, clampPx],
+  );
+
+  const beatTopBid = useCallback(() => {
+    const targetCents = topBidTarget?.cents ?? minimumPurchaseCents;
+    syncFromAmount(String(targetCents / 100));
+  }, [minimumPurchaseCents, syncFromAmount, topBidTarget]);
+
+  // Dragging or resizing drives the price, so the budget and pixel fields follow the rect.
+  const handleSelChange = useCallback(
+    (rect: Rect) => {
+      setManualSel(rect);
+      const px = rect.w * rect.h * CELL_PX * CELL_PX;
+      setPixels(String(px));
+      setAmount(String(Math.round(amountCentsForPixels(px, snapshot.stats.pixelsSold) / 100)));
+    },
+    [snapshot.stats.pixelsSold],
+  );
+
+  const shuffleSpot = useCallback(() => {
+    setManualSel(null);
+    setVariationIndex((prev) => prev + 1);
+  }, []);
+
+  // Closing the panel, or the shirt growing to a new milestone, drops a stale rect.
+  useEffect(() => {
+    if (!buyOpen) setManualSel(null);
   }, [buyOpen]);
 
   useEffect(() => {
-    if (pinch.current) return;
-    const frame = requestAnimationFrame(() => {
-      const vp = viewportRef.current;
-      if (!vp) return;
-      vp.scrollLeft = Math.max(0, (vp.scrollWidth - vp.clientWidth) / 2);
-      vp.scrollTop = Math.max(0, (vp.scrollHeight - vp.clientHeight) / 2);
+    setManualSel((current) => {
+      if (!current) return null;
+      const stillValid =
+        isRectInViewport(current, viewport) &&
+        !placedRects.some((p) => rectsOverlap(current, p));
+      return stillValid ? current : null;
     });
-    return () => cancelAnimationFrame(frame);
-  }, [zoom, base]);
+  }, [viewport, placedRects]);
 
-  useEffect(() => {
-    if (buyOpen) {
-      setBuyStep(1);
-      setAutoNote(null);
-      void loadSnapshot().catch(() => undefined);
-    }
-  }, [buyOpen, loadSnapshot]);
+  const handleCreativeUpload = (file: File) => {
+    setCreativeFile(file);
+    const objectUrl = URL.createObjectURL(file);
+    setCreative(objectUrl);
 
-  const occupied = useCallback(
-    (x: number, y: number, w: number, h: number) => {
-      if (x < 0 || y < 0 || x + w > COLS || y + h > ROWS) return true;
-      for (let j = y; j < y + h; j++)
-        for (let i = x; i < x + w; i++) {
-          if (
-            snapshot.occupied.some(
-              (p) => i >= p.x && i < p.x + p.w && j >= p.y && j < p.y + p.h,
-            )
-          )
-            return true;
-        }
-      return false;
-    },
-    [snapshot.occupied],
-  );
-
-  const cellFrom = (e: { clientX: number; clientY: number }) => {
-    const r = ref.current!.getBoundingClientRect();
-    const x = clamp(Math.floor(((e.clientX - r.left) / r.width) * COLS), 0, COLS - 1);
-    const y = clamp(Math.floor(((e.clientY - r.top) / r.height) * ROWS), 0, ROWS - 1);
-    return { x, y };
-  };
-
-  const startSelectionTransform = (
-    e: PointerEvent,
-    mode: SelectionTransform["mode"],
-  ) => {
-    if (!sel) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    selectionTransform.current = {
-      mode,
-      start: cellFrom(e),
-      initial: { ...sel },
-    };
-    setHint(null);
-  };
-
-  const onPointerDown = (e: PointerEvent) => {
-    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-
-    if (pointers.current.size === 2) {
-      setDrag(null);
-      const [a, b] = [...pointers.current.values()];
-      pinch.current = { dist: Math.hypot(a!.x - b!.x, a!.y - b!.y) || 1, zoom };
-      return;
-    }
-
-    if (spaceDown || panning) {
-      e.preventDefault();
-      const v = viewportRef.current;
-      if (!v) return;
-      setPanning(true);
-      panStart.current = {
-        x: e.clientX,
-        y: e.clientY,
-        scrollLeft: v.scrollLeft,
-        scrollTop: v.scrollTop,
-      };
-      return;
-    }
-
-    const c = cellFrom(e);
-    if (occupied(c.x, c.y, 1, 1)) {
-      setHint("That space is already taken — drag over an empty area.");
-      return;
-    }
-    setHint(null);
-    setDrag(c);
-    setSel({ ...c, w: 1, h: 1 });
-  };
-
-  const onPointerMove = (e: PointerEvent) => {
-    const transform = selectionTransform.current;
-    if (transform) {
-      e.preventDefault();
-      const cell = cellFrom(e);
-      const { initial } = transform;
-
-      if (transform.mode === "move") {
-        const candidate = {
-          ...initial,
-          x: clamp(initial.x + cell.x - transform.start.x, 0, COLS - initial.w),
-          y: clamp(initial.y + cell.y - transform.start.y, 0, ROWS - initial.h),
-        };
-        if (!occupied(candidate.x, candidate.y, candidate.w, candidate.h)) setSel(candidate);
-        return;
-      }
-
-      let left = initial.x;
-      let top = initial.y;
-      let right = initial.x + initial.w;
-      let bottom = initial.y + initial.h;
-
-      if (transform.mode.includes("w")) left = clamp(cell.x, 0, right - 1);
-      if (transform.mode.includes("e")) right = clamp(cell.x + 1, left + 1, COLS);
-      if (transform.mode.includes("n")) top = clamp(cell.y, 0, bottom - 1);
-      if (transform.mode.includes("s")) bottom = clamp(cell.y + 1, top + 1, ROWS);
-
-      const candidate = { x: left, y: top, w: right - left, h: bottom - top };
-      if (!occupied(candidate.x, candidate.y, candidate.w, candidate.h)) setSel(candidate);
-      return;
-    }
-
-    if (pointers.current.has(e.pointerId))
-      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (pointers.current.size >= 2 && pinch.current) {
-      e.preventDefault();
-      const [a, b] = [...pointers.current.values()];
-      const dist = Math.hypot(a!.x - b!.x, a!.y - b!.y) || 1;
-      setZoom(clamp(pinch.current.zoom * (dist / pinch.current.dist), 1, 8));
-      return;
-    }
-
-    if (panning && panStart.current) {
-      e.preventDefault();
-      const v = viewportRef.current;
-      if (!v) return;
-      v.scrollLeft = panStart.current.scrollLeft - (e.clientX - panStart.current.x);
-      v.scrollTop = panStart.current.scrollTop - (e.clientY - panStart.current.y);
-      return;
-    }
-    if (!drag) return;
-    e.preventDefault();
-    const c = cellFrom(e);
-    const x = Math.min(drag.x, c.x);
-    const y = Math.min(drag.y, c.y);
-    const w = Math.abs(c.x - drag.x) + 1;
-    const h = Math.abs(c.y - drag.y) + 1;
-    if (occupied(x, y, w, h)) return;
-    setSel({ x, y, w, h });
-  };
-
-  const endPointer = (e?: PointerEvent) => {
-    selectionTransform.current = null;
-    if (e) pointers.current.delete(e.pointerId);
-    else pointers.current.clear();
-    if (pointers.current.size < 2) pinch.current = null;
-    if (drag && sel && !buyOpen) onStartDraw?.();
-    setDrag(null);
-    setPanning(false);
-    panStart.current = null;
-  };
-
-  useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      if (e.code === "Escape") {
-        selectionTransform.current = null;
-        setSel(null);
-        onClose?.();
-        return;
-      }
-      if (e.code === "Space" && !spaceDown) {
-        e.preventDefault();
-        setSpaceDown(true);
+    // Detect image dimensions to preserve natural aspect ratio
+    const img = new Image();
+    img.onload = () => {
+      if (img.width && img.height) {
+        const aspect = img.width / img.height;
+        setCreativeAspect(aspect);
       }
     };
-    const up = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
-        setSpaceDown(false);
-        setPanning(false);
-        panStart.current = null;
-      }
-    };
-    const pointerUp = () => {
-      selectionTransform.current = null;
-      pointers.current.clear();
-      pinch.current = null;
-      setDrag(null);
-      setPanning(false);
-      panStart.current = null;
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    window.addEventListener("pointerup", pointerUp);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-      window.removeEventListener("pointerup", pointerUp);
-    };
-  }, [spaceDown, onClose]);
-
-  const expandToAvailable = () => {
-    if (!sel) return;
-
-    let best = sel;
-    let bestArea = sel.w * sel.h;
-    const selectedBottom = sel.y + sel.h;
-
-    for (let top = sel.y; top >= 0; top -= 1) {
-      for (let bottom = selectedBottom; bottom <= ROWS; bottom += 1) {
-        const height = bottom - top;
-        if (occupied(sel.x, top, sel.w, height)) continue;
-
-        let left = sel.x;
-        while (left > 0 && !occupied(left - 1, top, 1, height)) left -= 1;
-
-        let right = sel.x + sel.w;
-        while (right < COLS && !occupied(right, top, 1, height)) right += 1;
-
-        const area = (right - left) * height;
-        if (area > bestArea) {
-          best = { x: left, y: top, w: right - left, h: height };
-          bestArea = area;
-        }
-      }
-    }
-
-    if (bestArea === sel.w * sel.h) {
-      setHint("This selection already fills all available space around it.");
-      return;
-    }
-
-    setHint(null);
-    setSel(best);
+    img.src = objectUrl;
   };
 
-  const fitSelectionToLogo = () => {
-    if (!sel) return;
-
-    const area = sel.w * sel.h;
-    const targetW = clamp(Math.round(Math.sqrt(area * creativeAspect)), 1, COLS);
-    const targetH = clamp(Math.ceil(area / targetW), 1, ROWS);
-    const currentCenterX = sel.x + sel.w / 2;
-    const currentCenterY = sel.y + sel.h / 2;
-    let nearest: Sel = null;
-    let nearestDistance = Infinity;
-
-    for (let y = 0; y <= ROWS - targetH; y += 1) {
-      for (let x = 0; x <= COLS - targetW; x += 1) {
-        if (occupied(x, y, targetW, targetH)) continue;
-        const distance =
-          Math.abs(x + targetW / 2 - currentCenterX) + Math.abs(y + targetH / 2 - currentCenterY);
-        if (distance < nearestDistance) {
-          nearest = { x, y, w: targetW, h: targetH };
-          nearestDistance = distance;
-        }
-      }
-    }
-
-    if (!nearest) {
-      setHint("There isn't enough free space nearby to fit this logo ratio.");
-      return;
-    }
-
-    setHint(null);
-    setSel(nearest);
-  };
-
-  const nudge = (dx: number, dy: number) => {
-    if (!sel) return;
-    const x = clamp(sel.x + dx, 0, COLS - sel.w);
-    const y = clamp(sel.y + dy, 0, ROWS - sel.h);
-    if (occupied(x, y, sel.w, sel.h)) {
-      setHint("Can't move there — that space is sold.");
-      return;
-    }
-    setHint(null);
-    setSel({ ...sel, x, y });
-  };
-
-  const cells = sel ? sel.w * sel.h : 0;
-  const selPixels = cells * CELL_PX * CELL_PX;
-  const priceCents = amountCentsForPixels(selPixels, snapshot.stats.pixelsSold);
-
-  const findFree = useCallback(
-    (targetCells: number) => {
-      for (let c = Math.max(1, targetCells); c >= 1; c--) {
-        const { w, h } = planRect(c);
-        for (let y = 0; y <= ROWS - h; y++)
-          for (let x = 0; x <= COLS - w; x++)
-            if (!occupied(x, y, w, h)) return { x, y, w, h, exact: c === targetCells };
-      }
-      return null;
-    },
-    [occupied],
-  );
-
-  const applyAmount = () => {
-    const px = Math.max(100, Math.round(Number(pixels) || 0));
-    const targetCells = Math.max(1, Math.round(px / (CELL_PX * CELL_PX)));
-    const found = findFree(targetCells);
-    if (!found) {
-      setAutoNote("The shirt is completely sold out.");
-      return;
-    }
-    setSel({ x: found.x, y: found.y, w: found.w, h: found.h });
-    setAutoNote(
-      found.exact
-        ? null
-        : `Not that much free space left — reserved the largest free block instead (${found.w * found.h * CELL_PX * CELL_PX} px).`,
-    );
-  };
-
-  const syncFromAmount = (v: string) => {
-    setAmount(v);
-    const dollars = Number(v.replace(/[^0-9.]/g, "")) || 0;
-    setPixels(
-      String(pixelsForBudget(Math.round(dollars * 100), snapshot.stats.pixelsSold)),
-    );
-  };
-
-  const syncFromPixels = (v: string) => {
-    setPixels(v);
-    const px = Number(v.replace(/[^0-9.]/g, "")) || 0;
-    setAmount(String(Math.round(amountCentsForPixels(px, snapshot.stats.pixelsSold) / 100)));
-  };
+  const identityReady = Boolean(creativeFile && brand.trim() && url.trim());
+  const checkoutDisabled =
+    !identityReady || !termsAccepted || checkoutLoading || !sel || snapshot.auctionClosed;
 
   const placeBid = async () => {
-    if (!sel || !creativeFile || !termsAccepted || checkoutLoading) return;
+    if (!creativeFile || !termsAccepted || checkoutLoading || !sel) return;
 
     setCheckoutLoading(true);
     setHint(null);
+
     const formData = new FormData();
     formData.set("brand", brand.trim());
     const website = url.trim();
@@ -700,407 +594,286 @@ export default function Artboard({
         method: "POST",
         body: formData,
       });
-      const result = (await response.json()) as { checkoutUrl?: string; error?: string };
 
-      if (!response.ok || !result.checkoutUrl) {
-        if (response.status === 409) {
-          await loadSnapshot().catch(() => undefined);
-        }
-        setHint(result.error ?? "Checkout could not be started.");
-        return;
+      const data = (await response.json()) as { checkoutUrl?: string; error?: string };
+
+      if (!response.ok || !data.checkoutUrl) {
+        throw new Error(data.error || "Unable to start checkout.");
       }
 
-      window.location.assign(result.checkoutUrl);
-    } catch {
-      setHint("Checkout could not be reached. Check your connection and try again.");
-    } finally {
+      window.location.href = data.checkoutUrl;
+    } catch (err) {
       setCheckoutLoading(false);
+      setHint(err instanceof Error ? err.message : "Checkout error occurred.");
     }
   };
 
-  const cursor =
-    viewMode === "shirt"
-      ? "cursor-default"
-      : panning
-        ? "cursor-grabbing"
-        : spaceDown
-          ? "cursor-grab"
-          : "cursor-crosshair";
-  const previewPx = Math.max(0, Math.round(Number(pixels) || 0));
-  const previewRect = planRect(Math.max(1, previewPx / (CELL_PX * CELL_PX)));
-  const previewW = previewRect.w * CELL_PX;
-  const previewH = previewRect.h * CELL_PX;
-  const identityReady = Boolean(creativeFile && brand.trim() && url.trim());
-  const checkoutDisabled = !termsAccepted || checkoutLoading || snapshot.auctionClosed;
-
   return (
     <div className={`relative h-full w-full overflow-hidden bg-black ${className}`}>
-      <ViewTabs viewMode={viewMode} onChange={setViewMode} />
-
-      {viewMode === "bidding" ? (
-        <div
-          ref={viewportRef}
-          className={`no-scrollbar absolute inset-0 touch-none overflow-auto ${
-            buyOpen ? "pr-80 lg:pr-96" : ""
-          } ${cursor}`}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={endPointer}
-          onPointerCancel={endPointer}
-        >
-          <div className="flex min-h-full min-w-full items-center justify-center px-4 py-16">
-            <div
-              ref={ref}
-              className="relative shrink-0 touch-none select-none bg-[#0b0b0b]"
-              style={{
-                width: base ? `${base.w * zoom}px` : "100%",
-                height: base ? `${base.h * zoom}px` : "auto",
-                aspectRatio: base ? undefined : `${COLS} / ${ROWS}`,
-              }}
-            >
-              <ArtboardGrid
-                placements={snapshot.placements}
-                sel={sel}
-                creative={creative}
-                creativeFit={creativeFit}
-                interactive
-                onStartSelectionTransform={startSelectionTransform}
-              />
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div
-          className={`absolute inset-0 overflow-hidden ${buyOpen ? "pr-80 lg:pr-96" : ""}`}
-        >
-          <TShirtPreview
-            placements={snapshot.placements}
-            sel={sel}
-            creative={creative}
-            creativeFit={creativeFit}
-          />
-        </div>
-      )}
-
-      {viewMode === "bidding" && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex items-center justify-center">
-          <div className="pointer-events-auto flex items-center gap-2 rounded border border-border/50 bg-black/85 p-2 backdrop-blur">
-            {([1, 2, 5] as const).map((z) => (
-              <button
-                key={z}
-                onClick={() => setZoom(z)}
-                className={`inline-flex h-11 min-w-[2.75rem] items-center justify-center border px-3.5 font-condensed text-sm uppercase leading-none ${
-                  Math.abs(zoom - z) < 0.05
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border text-muted-foreground hover:bg-secondary hover:text-foreground"
-                }`}
-                aria-label={`Zoom ${z}x`}
-              >
-                {z}×
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
+      {/* Main T-Shirt Mockup Area */}
       <div
-        className={`absolute right-0 top-0 bottom-0 z-40 w-80 overflow-y-auto border-l border-border bg-card/95 backdrop-blur transition-[translate] duration-500 ease-out lg:w-96 ${
+        className={`h-full w-full transition-[padding] duration-500 ease-out ${
+          buyOpen ? "pr-0 lg:pr-96" : "pr-0"
+        }`}
+      >
+        <TShirtPreview
+          placements={snapshot.placements}
+          sel={sel}
+          creative={creative}
+          creativeFit={creativeFit}
+          hoveredPlacement={hoveredPlacement}
+          setHoveredPlacement={setHoveredPlacement}
+          viewport={viewport}
+          interactive={buyOpen && !snapshot.auctionClosed}
+          onSelChange={handleSelChange}
+        />
+      </div>
+
+      {/* Buy Panel Drawer */}
+      <aside
+        className={`absolute right-0 top-0 bottom-0 z-40 w-full overflow-y-auto border-l border-border bg-card/95 backdrop-blur transition-transform duration-500 ease-out sm:w-80 lg:w-96 ${
           buyOpen ? "pointer-events-auto translate-x-0" : "pointer-events-none translate-x-full"
         }`}
       >
+        {/* Drawer Header */}
         <div className="sticky top-0 z-10 flex items-start justify-between border-b border-border/40 bg-card/95 p-4 backdrop-blur">
           <div>
             <p className="font-display text-lg tracking-wide">BUY SPACE ON THE SHIRT</p>
             <p className="mt-0.5 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
               {formatPixelPrice(snapshot.stats.currentPriceCents)} / pixel ·{" "}
               {formatPixelPrice(MIN_PRINTED_PIXELS * snapshot.stats.currentPriceCents)} minimum
-              {snapshot.stats.nextPriceCents
-                ? ` · next ${formatPixelPrice(snapshot.stats.nextPriceCents)}`
-                : ""}
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
             aria-label="Close buy panel"
-            className="ml-3 flex h-9 w-9 shrink-0 items-center justify-center border border-border hover:bg-secondary"
           >
-            <X size={16} />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="p-4">
-          <div className="flex items-center justify-between border-b border-border/50 pb-3 font-condensed text-xs uppercase tracking-widest">
-            <span className="text-foreground">Step {buyStep} of 2</span>
-            <span className="text-muted-foreground">{buyStep === 1 ? "Your brand" : "Your position"}</span>
-          </div>
-
-          {buyStep === 1 ? (
-            <div>
-              <label className="relative mt-4 flex h-44 cursor-pointer items-center justify-center overflow-hidden border border-dashed border-border bg-black/20 text-center transition-colors hover:border-foreground hover:bg-black/35">
-                {creative ? (
-                  // eslint-disable-next-line @next/next/no-img-element
+        {/* Form Body */}
+        <div className="space-y-5 p-4">
+          {/* Creative Upload */}
+          <div>
+            <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+              1. Upload Logo / Creative
+            </label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleCreativeUpload(file);
+              }}
+            />
+            {creative ? (
+              <div className="flex items-center gap-3 rounded border border-border bg-black/40 p-3">
+                <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded border border-border bg-black">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={creative}
-                    alt="Uploaded logo preview"
-                    className="h-full w-full object-cover"
+                    alt="Creative preview"
+                    className={`h-full w-full ${creativeFit === "cover" ? "object-cover" : "object-contain"}`}
                   />
-                ) : (
-                  <Upload aria-hidden="true" size={34} strokeWidth={1.5} className="text-muted-foreground" />
-                )}
-                <span className="absolute inset-x-0 bottom-0 bg-black/85 py-2.5 font-condensed text-xs uppercase tracking-widest text-white">
-                  {creative ? "Change logo" : "Upload logo"}
-                </span>
-                <input
-                  type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                      if (file.size > 4 * 1024 * 1024) {
-                        setHint("Image must be 4 MB or smaller.");
-                        e.currentTarget.value = "";
-                        return;
-                      }
-                    const objectUrl = URL.createObjectURL(file);
-                    const image = new window.Image();
-                    image.onload = () => {
-                      if (image.naturalHeight > 0) {
-                        setCreativeAspect(image.naturalWidth / image.naturalHeight);
-                      }
-                    };
-                    image.src = objectUrl;
-                    setCreativeFit("cover");
-                      setCreativeFile(file);
-                    setCreative(objectUrl);
-                      setTermsAccepted(false);
-                      setHint(null);
-                  }}
-                />
-              </label>
-
-              <label className="mt-4 block">
-                <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                  Brand name
-                </span>
-                <input
-                  value={brand}
-                  onChange={(e) => setBrand(e.target.value)}
-                  placeholder="Your brand"
-                  className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-condensed text-base outline-none placeholder:text-muted-foreground focus:border-foreground"
-                />
-              </label>
-
-              <label className="mt-3 block">
-                <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                  Website
-                </span>
-                <input
-                  type="url"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://yourbrand.com"
-                  className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-condensed text-base outline-none placeholder:text-muted-foreground focus:border-foreground"
-                />
-              </label>
-
-              <button
-                type="button"
-                disabled={!identityReady}
-                onClick={() => setBuyStep(2)}
-                className="mt-4 h-12 w-full bg-foreground px-5 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
-              >
-                NEXT · CHOOSE POSITION
-              </button>
-              {!identityReady && (
-                <p className="mt-2 text-center font-condensed text-xs text-muted-foreground">
-                  Add your logo, brand name and website to continue.
-                </p>
-              )}
-            </div>
-          ) : (
-            <div>
-              <button
-                type="button"
-                onClick={() => setBuyStep(1)}
-                className="mt-4 flex items-center gap-2 font-condensed text-xs uppercase tracking-widest text-muted-foreground hover:text-foreground"
-              >
-                <ArrowLeft aria-hidden="true" size={14} />
-                Edit brand
-              </button>
-
-              {!sel ? (
-                <div className="mt-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="block">
-                      <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                        Budget ($)
-                      </span>
-                      <input
-                        inputMode="numeric"
-                        value={amount}
-                        onChange={(e) => syncFromAmount(e.target.value)}
-                        className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-display text-lg outline-none focus:border-foreground"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                        Pixels
-                      </span>
-                      <input
-                        inputMode="numeric"
-                        value={pixels}
-                        onChange={(e) => syncFromPixels(e.target.value)}
-                        className="mt-1.5 h-12 w-full border border-border bg-transparent px-3 font-display text-lg outline-none focus:border-foreground"
-                      />
-                    </label>
-                  </div>
-
-                  <div className="mt-3 border border-border bg-black/20 p-3">
-                    <div className="flex items-end justify-between gap-3">
-                      <div>
-                        <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                          Estimated block
-                        </p>
-                        <p className="mt-1 font-display text-2xl leading-none">
-                          {previewW}×{previewH} px
-                        </p>
-                      </div>
-                      <p className="font-display text-xl leading-none">
-                        {usd(amountCentsForPixels(previewPx, snapshot.stats.pixelsSold))}
-                      </p>
-                    </div>
-                  </div>
-
-                  {autoNote && <p className="mt-3 font-condensed text-xs text-foreground">{autoNote}</p>}
-                  {hint && <p className="mt-3 font-condensed text-xs text-muted-foreground">{hint}</p>}
-
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-foreground">
+                    {creativeFile?.name}
+                  </p>
+                  <p className="font-condensed text-[11px] text-muted-foreground">
+                    Ratio: {creativeAspect.toFixed(2)} : 1
+                  </p>
                   <button
                     type="button"
-                    onClick={applyAmount}
-                    className="mt-4 h-12 w-full bg-foreground px-5 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mt-1 font-condensed text-xs text-[var(--accent-yellow)] underline hover:text-white"
                   >
-                    FIND MY SPACE
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setHint("Drag over any free area on the artboard.")}
-                    className="mt-2 h-11 w-full border border-border px-5 font-condensed text-xs uppercase tracking-widest hover:bg-secondary"
-                  >
-                    Draw on artboard
+                    Change file
                   </button>
                 </div>
-              ) : (
-                <div className="mt-4">
-                  <div className="grid grid-cols-2 border border-border bg-black/20">
-                    <div className="border-r border-border p-3">
-                      <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                        Selected
-                      </p>
-                      <p className="mt-1 font-display text-xl leading-none">
-                        {sel.w * CELL_PX}×{sel.h * CELL_PX} px
-                      </p>
-                      <p className="mt-1 font-condensed text-xs text-muted-foreground">
-                        {selPixels.toLocaleString()} pixels
-                      </p>
-                    </div>
-                    <div className="p-3">
-                      <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                        Your bid
-                      </p>
-                      <p className="mt-1 font-display text-2xl leading-none">{usd(priceCents)}</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                      Size
-                    </p>
-                    <div className="mt-1.5 grid grid-cols-2 gap-2">
-                      {[
-                        { label: "Fit logo", Icon: Focus, action: fitSelectionToLogo },
-                        { label: "Expand", Icon: Maximize2, action: expandToAvailable },
-                      ].map(({ label, Icon, action }) => (
-                          <button
-                            key={label}
-                            type="button"
-                            onClick={action}
-                            title={label === "Expand" ? "Expand to fill all available space" : undefined}
-                            className="flex h-11 items-center justify-center gap-2 border border-border font-condensed text-xs uppercase tracking-widest hover:bg-secondary"
-                          >
-                            <Icon aria-hidden="true" size={15} />
-                            {label}
-                          </button>
-                        ))}
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                      Position
-                    </p>
-                    <div className="mt-1.5 grid grid-cols-4 gap-2">
-                      {(
-                        [
-                          ["Left", -1, 0, ArrowLeft],
-                          ["Right", 1, 0, ArrowRight],
-                          ["Up", 0, -1, ArrowUp],
-                          ["Down", 0, 1, ArrowDown],
-                        ] as const
-                      ).map(([label, dx, dy, Icon]) => (
-                        <button
-                          key={label}
-                          type="button"
-                          onClick={() => nudge(dx, dy)}
-                          className="h-11 border border-border font-display text-base leading-none hover:bg-secondary"
-                          aria-label={`Move selection ${label}`}
-                        >
-                          <Icon aria-hidden="true" className="mx-auto" size={16} />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <label className="mt-4 flex cursor-pointer items-start gap-2 border-t border-border pt-4 font-condensed text-xs leading-snug text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      checked={termsAccepted}
-                      onChange={(event) => setTermsAccepted(event.target.checked)}
-                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent-yellow)]"
-                    />
-                    <span>
-                      I understand this purchase is final and non-refundable once payment is
-                      confirmed.
-                    </span>
-                  </label>
-
-                  {hint && <p className="mt-3 font-condensed text-xs text-foreground">{hint}</p>}
-
-                  <button
-                    type="button"
-                    onClick={() => void placeBid()}
-                    disabled={checkoutDisabled}
-                    className="mt-4 h-14 w-full bg-foreground px-5 font-display text-lg tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
-                  >
-                    {snapshot.auctionClosed
-                      ? "AUCTION CLOSED"
-                      : checkoutLoading
-                        ? "RESERVING…"
-                        : `RESERVE & PAY · ${usd(priceCents)}`}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSel(null)}
-                    className="mt-2 h-10 w-full font-condensed text-xs uppercase tracking-widest text-muted-foreground hover:text-foreground"
-                  >
-                    Choose another position
-                  </button>
-                </div>
-              )}
               </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex w-full flex-col items-center justify-center gap-2 rounded border border-dashed border-border bg-secondary/30 p-5 text-center transition-colors hover:border-foreground/40 hover:bg-secondary/50"
+              >
+                <Upload className="h-6 w-6 text-muted-foreground" />
+                <span className="font-condensed text-xs uppercase tracking-wider text-muted-foreground">
+                  Click to upload logo (PNG, JPG, WebP)
+                </span>
+              </button>
+            )}
+          </div>
+
+          {/* Brand Name */}
+          <div>
+            <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+              2. Brand Name
+            </label>
+            <input
+              type="text"
+              value={brand}
+              onChange={(e) => setBrand(e.target.value)}
+              placeholder="e.g. Acme Corp"
+              maxLength={80}
+              className="h-10 w-full rounded border border-border bg-background px-3 font-sans text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground focus:outline-none"
+            />
+          </div>
+
+          {/* Website URL */}
+          <div>
+            <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+              3. Website URL
+            </label>
+            <input
+              type="text"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="e.g. acme.com"
+              className="h-10 w-full rounded border border-border bg-background px-3 font-sans text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground focus:outline-none"
+            />
+          </div>
+
+          {/* Bid amount and live leaderboard target */}
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <label
+                htmlFor="bid-amount"
+                className="font-condensed text-xs uppercase tracking-widest text-muted-foreground"
+              >
+                4. Your Bid
+              </label>
+              <button
+                type="button"
+                onClick={shuffleSpot}
+                className="flex items-center gap-1 font-condensed text-[11px] text-[var(--accent-yellow)] hover:text-white"
+              >
+                <Shuffle className="h-3 w-3" />
+                Randomize spot
+              </button>
+            </div>
+
+            {topBidder ? (
+              <div
+                className={`mb-3 rounded border p-3 ${
+                  takesTopSpot
+                    ? "border-emerald-400/40 bg-emerald-400/10"
+                    : "border-[var(--accent-yellow)]/35 bg-[var(--accent-yellow)]/8"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-1.5 font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
+                      <Trophy className="h-3 w-3 text-[var(--accent-yellow)]" />
+                      Current #1
+                    </p>
+                    <p className="mt-1 truncate font-display text-base tracking-wide text-white">
+                      {topBidder.brand}
+                    </p>
+                  </div>
+                  <span className="shrink-0 font-display text-xl text-white">
+                    {usd(topBidder.bidCents)}
+                  </span>
+                </div>
+
+                {takesTopSpot ? (
+                  <p className="mt-3 border-t border-emerald-400/20 pt-2 font-condensed text-sm font-semibold text-emerald-300">
+                    YOU&apos;RE #1 BY {usd(totalCents - topBidder.bidCents)}
+                  </p>
+                ) : topBidTarget ? (
+                  <button
+                    type="button"
+                    onClick={beatTopBid}
+                    className="mt-3 h-10 w-full rounded bg-[var(--accent-yellow)] px-3 font-display text-sm tracking-wide text-black transition hover:bg-white"
+                  >
+                    TAKE #1 WITH {usd(topBidTarget.cents)}
+                  </button>
+                ) : (
+                  <p className="mt-3 border-t border-white/10 pt-2 font-condensed text-xs text-muted-foreground">
+                    More space must unlock before a new logo can take #1.
+                  </p>
+                )}
+            </div>
+            ) : (
+              <button
+                type="button"
+                onClick={beatTopBid}
+                className="mb-4 h-11 w-full rounded bg-[var(--accent-yellow)] px-3 font-display text-sm tracking-wide text-black transition hover:bg-white"
+              >
+                BE THE FIRST TOP BIDDER · {usd(minimumPurchaseCents)}
+              </button>
+            )}
+
+            <div className="relative">
+              <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-display text-xl text-muted-foreground">
+                $
+              </span>
+              <input
+                id="bid-amount"
+                type="text"
+                inputMode="numeric"
+                aria-label="Your bid in USD"
+                value={amount}
+                onFocus={() => setBidFocused(true)}
+                onChange={(e) => syncFromAmount(e.target.value)}
+                onBlur={() => setBidFocused(false)}
+                className="h-14 w-full rounded border-2 border-[var(--accent-yellow)]/55 bg-background pl-10 pr-4 font-display text-2xl tracking-wide text-white focus:border-[var(--accent-yellow)] focus:outline-none"
+              />
+            </div>
+          </div>
+
+          {!sel && (
+            <div className="flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>No available spot at this bid.</span>
+            </div>
           )}
+
+          {/* Terms Agreement */}
+          <label className="flex cursor-pointer items-start gap-2 border-t border-border pt-3 font-condensed text-xs leading-snug text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={termsAccepted}
+              onChange={(e) => setTermsAccepted(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent-yellow)]"
+            />
+            <span>
+              I agree to the{" "}
+              <a href="/terms" className="underline underline-offset-2 hover:text-foreground">
+                Terms
+              </a>{" "}
+              and{" "}
+              <a href="/rules" className="underline underline-offset-2 hover:text-foreground">
+                Rules
+              </a>
+              . All purchases are final and non-refundable.
+            </span>
+          </label>
+
+          {hint && <p className="font-condensed text-xs text-red-400">{hint}</p>}
+
+          {/* Purchase Button */}
+          <button
+            type="button"
+            onClick={() => void placeBid()}
+            disabled={checkoutDisabled}
+            className="h-14 w-full rounded bg-foreground px-5 font-display text-lg tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
+          >
+            {snapshot.auctionClosed
+              ? "AUCTION CLOSED"
+              : checkoutLoading
+                ? "RESERVING SPOT…"
+                : `PURCHASE · ${usd(totalCents)}`}
+          </button>
+
         </div>
-      </div>
+      </aside>
     </div>
   );
 }

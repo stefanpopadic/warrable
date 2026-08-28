@@ -3,12 +3,13 @@ import "server-only";
 import { getSql } from "@/db";
 import {
   AUCTION_END,
-  COLS,
+  getMilestoneState,
   getPricingTier,
   RESERVATION_MINUTES,
-  ROWS,
+  viewportForRaised,
   type Rect,
 } from "@/lib/auction";
+import { faviconUrlForWebsite } from "@/lib/artboard";
 import type { ArtboardSnapshot } from "@/lib/artboard-data";
 import { isPlacementId } from "@/lib/checkout";
 
@@ -40,6 +41,7 @@ type PaidRow = {
   amount_cents: number;
   pixel_count: number;
   is_demo: boolean;
+  link_clicks: number;
 };
 
 type ReservedRow = {
@@ -52,6 +54,22 @@ type ReservedRow = {
 
 function asRows<T>(result: unknown) {
   return result as T[];
+}
+
+/** Total paid revenue in cents. Cheap enough to call on the checkout path. */
+export async function getRaisedCents() {
+  const sql = getSql();
+  const rows = asRows<{ raised_cents: string | number }>(await sql`
+    SELECT COALESCE(SUM(amount_cents), 0)::bigint AS raised_cents
+    FROM placements
+    WHERE status = 'paid'
+  `);
+  return Number(rows[0]?.raised_cents ?? 0);
+}
+
+/** Unlocked area of the world grid for the milestone the auction is currently on. */
+export async function getCurrentViewport() {
+  return viewportForRaised(await getRaisedCents());
 }
 
 export async function reservePlacement(input: {
@@ -293,6 +311,56 @@ export async function getPlacementCheckoutStatus(reference: string) {
   return rows[0] ?? null;
 }
 
+export async function recordPlacementLinkClick(placementId: string) {
+  if (!isPlacementId(placementId)) return false;
+  const sql = getSql();
+  const rows = asRows<{ id: string }>(await sql`
+    UPDATE placements
+    SET link_clicks = link_clicks + 1
+    WHERE id = ${placementId}::uuid
+      AND status = 'paid'
+    RETURNING id
+  `);
+  return Boolean(rows[0]);
+}
+
+export async function getSiteStats() {
+  const sql = getSql();
+  const rows = asRows<{ visitor_count: number; online_count: number }>(await sql`
+    SELECT visitor_count, online_count
+    FROM site_stats
+    WHERE id = 'default'
+    LIMIT 1
+  `);
+  const row = rows[0];
+  const placeholderOnline = Number(process.env.SITE_STATS_ONLINE_PLACEHOLDER ?? 0);
+  return {
+    visitorCount: Number(row?.visitor_count ?? 0),
+    onlineCount: placeholderOnline > 0 ? placeholderOnline : Number(row?.online_count ?? 0),
+  };
+}
+
+export async function recordSiteView() {
+  const sql = getSql();
+  const rows = asRows<{ visitor_count: number; online_count: number }>(await sql`
+    UPDATE site_stats
+    SET
+      visitor_count = visitor_count + 1,
+      updated_at = now()
+    WHERE id = 'default'
+    RETURNING visitor_count, online_count
+  `);
+  return getSiteStatsFromRow(rows[0]);
+}
+
+function getSiteStatsFromRow(row?: { visitor_count: number; online_count: number }) {
+  const placeholderOnline = Number(process.env.SITE_STATS_ONLINE_PLACEHOLDER ?? 0);
+  return {
+    visitorCount: Number(row?.visitor_count ?? 0),
+    onlineCount: placeholderOnline > 0 ? placeholderOnline : Number(row?.online_count ?? 0),
+  };
+}
+
 export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
   const sql = getSql();
   const [paidRows, reservedRows] = await Promise.all([
@@ -309,7 +377,8 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
         height_cells,
         amount_cents,
         pixel_count,
-        is_demo
+        is_demo,
+        link_clicks
       FROM placements
       WHERE status = 'paid'
         AND creative_url IS NOT NULL
@@ -342,6 +411,7 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
   const raisedCents = placements.reduce((total, placement) => total + placement.bidCents, 0);
   const pixelsSold = placements.reduce((total, placement) => total + placement.pixels, 0);
   const pricing = getPricingTier(pixelsSold);
+  const milestone = getMilestoneState(raisedCents);
 
   return {
     placements,
@@ -366,18 +436,22 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
     stats: {
       raisedCents,
       pixelsSold,
-      pixelsTotal: COLS * ROWS * 100,
+      pixelsTotal: milestone.capacityPixels,
       currentPriceCents: pricing.currentPriceCents,
       nextPriceCents: pricing.nextPriceCents,
       pixelsUntilNextTier: pricing.pixelsUntilNextTier,
     },
+    milestone,
     leaderboard: placements.map((placement, index) => ({
       rank: index + 1,
+      id: placement.id,
       brand: placement.brand,
       url: placement.url,
-      logo: placement.creative,
+      logo: faviconUrlForWebsite(placement.url),
+      creative: placement.creative,
       bidCents: placement.bidCents,
       pixels: placement.pixels,
+      linkClicks: Number(paid[index]?.link_clicks ?? 0),
     })),
     auctionClosed: Date.now() >= AUCTION_END,
     auctionEnd: new Date(AUCTION_END).toISOString(),

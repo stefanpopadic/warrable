@@ -14,7 +14,7 @@ export default function CheckoutCancelPage() {
     <main className="flex min-h-[100dvh] items-center justify-center bg-background px-5 py-12 text-foreground">
       <div className="w-full max-w-lg border border-border bg-card p-6 text-center sm:p-8">
         <p className="font-condensed text-xs uppercase tracking-[0.24em] text-muted-foreground">
-          Dodo checkout
+          Stripe checkout
         </p>
         <h1 className="mt-4 font-display text-5xl uppercase leading-none">
           PAYMENT CANCELLED.

@@ -1,13 +1,13 @@
 import {
   CELL_PX,
-  COLS,
   formatPixelPrice,
   pricePerPixelCents,
-  ROWS,
   usdFromCents,
+  WORLD_COLS,
+  WORLD_ROWS,
 } from "@/lib/auction";
 
-export { CELL_PX, COLS, ROWS };
+export { CELL_PX, WORLD_COLS, WORLD_ROWS };
 
 export function pricePerPixel(pixelsSold: number) {
   return pricePerPixelCents(pixelsSold) / 100;
@@ -18,3 +18,13 @@ export function cellPrice(pixelsSold: number) {
 }
 
 export { formatPixelPrice, usdFromCents as usd };
+
+export function faviconUrlForWebsite(websiteUrl: string, size = 128) {
+  try {
+    const { hostname } = new URL(websiteUrl);
+    if (!hostname) return null;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(hostname)}&sz=${size}`;
+  } catch {
+    return null;
+  }
+}

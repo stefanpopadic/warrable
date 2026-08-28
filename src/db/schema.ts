@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  bigint,
   index,
   integer,
   pgEnum,
@@ -50,6 +51,7 @@ export const placements = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    linkClicks: integer("link_clicks").notNull().default(0),
   },
   (table) => [
     index("placements_status_idx").on(table.status),
@@ -64,6 +66,13 @@ export const paymentEvents = pgTable("payment_events", {
   eventId: text("event_id").primaryKey(),
   eventType: text("event_type").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const siteStats = pgTable("site_stats", {
+  id: text("id").primaryKey(),
+  visitorCount: bigint("visitor_count", { mode: "number" }).notNull().default(0),
+  onlineCount: integer("online_count").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type Placement = typeof placements.$inferSelect;
