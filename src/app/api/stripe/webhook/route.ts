@@ -1,8 +1,11 @@
 import { del } from "@vercel/blob";
 import type Stripe from "stripe";
 import {
+  applyPaidExtension,
+  getExtensionForPayment,
   getPlacementForPayment,
   markCheckoutEnded,
+  markExtensionEnded,
   markPlacementPaid,
   markPaymentReview,
 } from "@/db/placements";
@@ -27,13 +30,80 @@ function placementIdFromSession(session: Stripe.Checkout.Session) {
   return id ? id : null;
 }
 
+function extensionIdFromSession(session: Stripe.Checkout.Session) {
+  const id = session.metadata?.extension_id?.trim();
+  return id ? id : null;
+}
+
 function paymentIntentId(session: Stripe.Checkout.Session) {
   const paymentIntent = session.payment_intent;
   if (!paymentIntent) return null;
   return typeof paymentIntent === "string" ? paymentIntent : paymentIntent.id;
 }
 
+async function processExtensionCompleted(event: Stripe.Event, session: Stripe.Checkout.Session) {
+  if (session.payment_status !== "paid") return;
+
+  const extensionId = extensionIdFromSession(session);
+  if (!extensionId) return;
+
+  const extension = await getExtensionForPayment(extensionId);
+  if (!extension) return;
+
+  const sessionId = session.id;
+  const paymentId = paymentIntentId(session);
+  const customerEmail = session.customer_details?.email ?? null;
+  const metadataAmountCents = Number(session.metadata?.amount_cents);
+  const amountMatches =
+    session.amount_total !== null &&
+    Number(extension.amount_cents) === session.amount_total &&
+    Number.isFinite(metadataAmountCents) &&
+    metadataAmountCents === session.amount_total;
+
+  if (!amountMatches) {
+    await markPaymentReview({
+      eventId: event.id,
+      eventType: event.type,
+      placementId: extension.placement_id,
+      sessionId,
+      paymentId,
+      customerEmail,
+    });
+    return;
+  }
+
+  try {
+    await applyPaidExtension({
+      eventId: event.id,
+      eventType: event.type,
+      extensionId,
+      sessionId,
+      paymentId,
+      customerEmail,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown_error";
+    if (message.includes("placement_overlap")) {
+      await markPaymentReview({
+        eventId: event.id,
+        eventType: event.type,
+        placementId: extension.placement_id,
+        sessionId,
+        paymentId,
+        customerEmail,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
 async function processCheckoutCompleted(event: Stripe.Event, session: Stripe.Checkout.Session) {
+  if (session.metadata?.kind === "extension" || extensionIdFromSession(session)) {
+    await processExtensionCompleted(event, session);
+    return;
+  }
+
   if (session.payment_status !== "paid") return;
 
   const placementId = placementIdFromSession(session);
@@ -79,6 +149,17 @@ async function processCheckoutCompleted(event: Stripe.Event, session: Stripe.Che
 }
 
 async function processCheckoutExpired(event: Stripe.Event, session: Stripe.Checkout.Session) {
+  const extensionId = extensionIdFromSession(session);
+  if (extensionId) {
+    await markExtensionEnded({
+      eventId: event.id,
+      eventType: event.type,
+      extensionId,
+      status: "expired",
+    });
+    return;
+  }
+
   const placementId = placementIdFromSession(session);
   if (!placementId) return;
 
@@ -121,15 +202,25 @@ export async function POST(request: Request) {
       await processCheckoutExpired(event, event.data.object as Stripe.Checkout.Session);
     } else if (event.type === "checkout.session.async_payment_failed") {
       const session = event.data.object as Stripe.Checkout.Session;
-      const placementId = placementIdFromSession(session);
-      if (placementId) {
-        const pathname = await markCheckoutEnded({
+      const extensionId = extensionIdFromSession(session);
+      if (extensionId) {
+        await markExtensionEnded({
           eventId: event.id,
           eventType: event.type,
-          placementId,
+          extensionId,
           status: "cancelled",
         });
-        await deleteCreative(pathname);
+      } else {
+        const placementId = placementIdFromSession(session);
+        if (placementId) {
+          const pathname = await markCheckoutEnded({
+            eventId: event.id,
+            eventType: event.type,
+            placementId,
+            status: "cancelled",
+          });
+          await deleteCreative(pathname);
+        }
       }
     }
 

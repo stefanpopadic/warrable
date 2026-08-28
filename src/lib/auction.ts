@@ -178,6 +178,16 @@ export function isRectInViewport(rect: Rect, viewport: Rect) {
   );
 }
 
+/** True when outer fully covers inner (inclusive cell ranges). */
+export function rectContains(outer: Rect, inner: Rect): boolean {
+  return (
+    outer.x <= inner.x &&
+    outer.y <= inner.y &&
+    outer.x + outer.w >= inner.x + inner.w &&
+    outer.y + outer.h >= inner.y + inner.h
+  );
+}
+
 export function rectsOverlap(a: Rect, b: Rect): boolean {
   return (
     a.x < b.x + b.w &&

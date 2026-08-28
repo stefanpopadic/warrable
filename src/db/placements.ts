@@ -3,8 +3,12 @@ import "server-only";
 import { getSql } from "@/db";
 import {
   AUCTION_END,
+  amountCentsForPixels,
   getMilestoneState,
   getPricingTier,
+  printedPixels,
+  rectContains,
+  rectsOverlap,
   RESERVATION_MINUTES,
   viewportForRaised,
   type Rect,
@@ -78,6 +82,7 @@ export async function reservePlacement(input: {
   creativeFit: "contain" | "cover";
   rect: Rect;
   requesterHash: string;
+  email: string;
 }) {
   const sql = getSql();
   const expiresAt = new Date(Date.now() + RESERVATION_MINUTES * 60_000);
@@ -92,12 +97,389 @@ export async function reservePlacement(input: {
       ${input.rect.w},
       ${input.rect.h},
       ${input.requesterHash},
-      ${expiresAt.toISOString()}::timestamptz
+      ${expiresAt.toISOString()}::timestamptz,
+      ${input.email}
     )
   `) as ReservationRow[];
 
   if (!rows[0]) throw new Error("reservation_failed");
   return rows[0];
+}
+
+type ExtendablePlacement = {
+  id: string;
+  brand_name: string;
+  website_url: string;
+  creative_url: string | null;
+  creative_fit: "contain" | "cover";
+  x: number;
+  y: number;
+  width_cells: number;
+  height_cells: number;
+  amount_cents: number;
+  pixel_count: number;
+  customer_email: string | null;
+  is_demo: boolean;
+  status: string;
+};
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export async function createPlacementExtension(input: {
+  placementId: string;
+  email: string;
+  rect: Rect;
+  requesterHash: string;
+}) {
+  const sql = getSql();
+  const email = normalizeEmail(input.email);
+  const expiresAt = new Date(Date.now() + RESERVATION_MINUTES * 60_000);
+
+  await sql`
+    UPDATE placement_extensions
+    SET status = 'expired', updated_at = now()
+    WHERE status = 'reserved'
+      AND expires_at <= now()
+  `;
+
+  const placementRows = (await sql`
+    SELECT
+      id,
+      brand_name,
+      website_url,
+      creative_url,
+      creative_fit,
+      x,
+      y,
+      width_cells,
+      height_cells,
+      amount_cents,
+      pixel_count,
+      customer_email,
+      is_demo,
+      status
+    FROM placements
+    WHERE id = ${input.placementId}::uuid
+    LIMIT 1
+  `) as ExtendablePlacement[];
+
+  const placement = placementRows[0];
+  if (!placement || placement.status !== "paid") {
+    throw new Error("placement_not_found");
+  }
+  if (placement.is_demo) {
+    throw new Error("demo_not_extendable");
+  }
+  if (!placement.customer_email) {
+    throw new Error("email_not_on_file");
+  }
+  if (normalizeEmail(placement.customer_email) !== email) {
+    throw new Error("email_mismatch");
+  }
+
+  const oldRect: Rect = {
+    x: Number(placement.x),
+    y: Number(placement.y),
+    w: Number(placement.width_cells),
+    h: Number(placement.height_cells),
+  };
+  if (!rectContains(input.rect, oldRect)) {
+    throw new Error("must_contain_original");
+  }
+  if (
+    input.rect.x === oldRect.x &&
+    input.rect.y === oldRect.y &&
+    input.rect.w === oldRect.w &&
+    input.rect.h === oldRect.h
+  ) {
+    throw new Error("must_grow");
+  }
+
+  const viewport = await getCurrentViewport();
+  if (
+    input.rect.x < viewport.x ||
+    input.rect.y < viewport.y ||
+    input.rect.x + input.rect.w > viewport.x + viewport.w ||
+    input.rect.y + input.rect.h > viewport.y + viewport.h
+  ) {
+    throw new Error("outside_viewport");
+  }
+
+  const blockers = asRows<{
+    id: string;
+    x: number;
+    y: number;
+    width_cells: number;
+    height_cells: number;
+  }>(await sql`
+    SELECT id, x, y, width_cells, height_cells
+    FROM placements
+    WHERE status IN ('paid', 'reserved')
+      AND id <> ${input.placementId}::uuid
+      AND (
+        status = 'paid'
+        OR reservation_expires_at > now()
+      )
+    UNION ALL
+    SELECT placement_id AS id, x, y, width_cells, height_cells
+    FROM placement_extensions
+    WHERE status = 'reserved'
+      AND expires_at > now()
+      AND placement_id <> ${input.placementId}::uuid
+  `);
+
+  for (const blocker of blockers) {
+    if (
+      rectsOverlap(input.rect, {
+        x: Number(blocker.x),
+        y: Number(blocker.y),
+        w: Number(blocker.width_cells),
+        h: Number(blocker.height_cells),
+      })
+    ) {
+      throw new Error("placement_overlap");
+    }
+  }
+
+  const oldPixels = Number(placement.pixel_count);
+  const paidPixelsRows = asRows<{ pixels: string | number }>(await sql`
+    SELECT COALESCE(SUM(pixel_count), 0)::bigint AS pixels
+    FROM placements
+    WHERE status = 'paid'
+  `);
+  const totalPaidPixels = Number(paidPixelsRows[0]?.pixels ?? 0);
+  const pixelsSoldBefore = Math.max(0, totalPaidPixels - oldPixels);
+  const newAmountCents = amountCentsForPixels(printedPixels(input.rect), pixelsSoldBefore);
+  const paidAmountCents = Number(placement.amount_cents);
+  const deltaCents = newAmountCents - paidAmountCents;
+  if (deltaCents <= 0) {
+    throw new Error("must_grow");
+  }
+
+  // Cancel any prior active extension for this placement, then insert.
+  await sql`
+    UPDATE placement_extensions
+    SET status = 'cancelled', updated_at = now()
+    WHERE placement_id = ${input.placementId}::uuid
+      AND status = 'reserved'
+  `;
+
+  const rows = asRows<{
+    id: string;
+    amount_cents: number;
+    new_amount_cents: number;
+    expires_at: string;
+  }>(await sql`
+    INSERT INTO placement_extensions (
+      placement_id,
+      email,
+      x,
+      y,
+      width_cells,
+      height_cells,
+      amount_cents,
+      new_amount_cents,
+      requester_hash,
+      expires_at
+    )
+    VALUES (
+      ${input.placementId}::uuid,
+      ${email},
+      ${input.rect.x},
+      ${input.rect.y},
+      ${input.rect.w},
+      ${input.rect.h},
+      ${deltaCents},
+      ${newAmountCents},
+      ${input.requesterHash},
+      ${expiresAt.toISOString()}::timestamptz
+    )
+    RETURNING id, amount_cents, new_amount_cents, expires_at
+  `);
+
+  if (!rows[0]) throw new Error("extension_failed");
+
+  return {
+    id: rows[0].id,
+    placementId: placement.id,
+    brandName: placement.brand_name,
+    amountCents: Number(rows[0].amount_cents),
+    newAmountCents: Number(rows[0].new_amount_cents),
+    pixelCount: printedPixels(input.rect),
+    addedPixels: printedPixels(input.rect) - oldPixels,
+    expiresAt: rows[0].expires_at,
+  };
+}
+
+export async function attachExtensionCheckoutSession(
+  extensionId: string,
+  sessionId: string,
+  expiresAt: Date,
+) {
+  const sql = getSql();
+  const rows = asRows<{ id: string }>(await sql`
+    UPDATE placement_extensions
+    SET
+      checkout_session_id = ${sessionId},
+      expires_at = ${expiresAt.toISOString()}::timestamptz,
+      updated_at = now()
+    WHERE id = ${extensionId}::uuid
+      AND status = 'reserved'
+    RETURNING id
+  `);
+  if (!rows[0]) throw new Error("extension_not_active");
+}
+
+export async function releaseExtension(extensionId: string) {
+  const sql = getSql();
+  await sql`
+    UPDATE placement_extensions
+    SET status = 'cancelled', updated_at = now()
+    WHERE id = ${extensionId}::uuid
+      AND status = 'reserved'
+  `;
+}
+
+export async function getExtensionForPayment(extensionId: string) {
+  const sql = getSql();
+  const rows = asRows<{
+    id: string;
+    placement_id: string;
+    amount_cents: number;
+    new_amount_cents: number;
+    status: string;
+    checkout_session_id: string | null;
+    x: number;
+    y: number;
+    width_cells: number;
+    height_cells: number;
+  }>(await sql`
+    SELECT
+      id,
+      placement_id,
+      amount_cents,
+      new_amount_cents,
+      status,
+      checkout_session_id,
+      x,
+      y,
+      width_cells,
+      height_cells
+    FROM placement_extensions
+    WHERE id = ${extensionId}::uuid
+    LIMIT 1
+  `);
+  return rows[0] ?? null;
+}
+
+export async function applyPaidExtension(input: {
+  eventId: string;
+  eventType: string;
+  extensionId: string;
+  sessionId: string;
+  paymentId: string | null;
+  customerEmail: string | null;
+}) {
+  const sql = getSql();
+  const extension = await getExtensionForPayment(input.extensionId);
+  if (!extension) throw new Error("extension_not_found");
+  if (extension.status === "paid") return true;
+  if (extension.status !== "reserved") throw new Error("extension_not_active");
+
+  const newRect: Rect = {
+    x: Number(extension.x),
+    y: Number(extension.y),
+    w: Number(extension.width_cells),
+    h: Number(extension.height_cells),
+  };
+
+  const blockers = asRows<{
+    x: number;
+    y: number;
+    width_cells: number;
+    height_cells: number;
+  }>(await sql`
+    SELECT x, y, width_cells, height_cells
+    FROM placements
+    WHERE status IN ('paid', 'reserved')
+      AND id <> ${extension.placement_id}::uuid
+      AND (
+        status = 'paid'
+        OR reservation_expires_at > now()
+      )
+  `);
+
+  for (const blocker of blockers) {
+    if (
+      rectsOverlap(newRect, {
+        x: Number(blocker.x),
+        y: Number(blocker.y),
+        w: Number(blocker.width_cells),
+        h: Number(blocker.height_cells),
+      })
+    ) {
+      throw new Error("placement_overlap");
+    }
+  }
+
+  const rows = asRows<{ id: string }>(await sql`
+    WITH incoming_event AS (
+      INSERT INTO payment_events (event_id, event_type)
+      VALUES (${input.eventId}, ${input.eventType})
+      ON CONFLICT DO NOTHING
+      RETURNING event_id
+    ),
+    paid_extension AS (
+      UPDATE placement_extensions
+      SET
+        status = 'paid',
+        checkout_session_id = ${input.sessionId},
+        paid_at = COALESCE(paid_at, now()),
+        updated_at = now()
+      WHERE id = ${input.extensionId}::uuid
+        AND status = 'reserved'
+        AND EXISTS (SELECT 1 FROM incoming_event)
+      RETURNING placement_id, x, y, width_cells, height_cells, new_amount_cents
+    )
+    UPDATE placements p
+    SET
+      x = e.x,
+      y = e.y,
+      width_cells = e.width_cells,
+      height_cells = e.height_cells,
+      amount_cents = e.new_amount_cents,
+      customer_email = COALESCE(p.customer_email, ${input.customerEmail}),
+      updated_at = now()
+    FROM paid_extension e
+    WHERE p.id = e.placement_id
+    RETURNING p.id
+  `);
+
+  return Boolean(rows[0]);
+}
+
+export async function markExtensionEnded(input: {
+  eventId: string;
+  eventType: string;
+  extensionId: string;
+  status: "expired" | "cancelled";
+}) {
+  const sql = getSql();
+  await sql`
+    WITH incoming_event AS (
+      INSERT INTO payment_events (event_id, event_type)
+      VALUES (${input.eventId}, ${input.eventType})
+      ON CONFLICT DO NOTHING
+      RETURNING event_id
+    )
+    UPDATE placement_extensions
+    SET status = ${input.status}::placement_extension_status, updated_at = now()
+    WHERE id = ${input.extensionId}::uuid
+      AND status = 'reserved'
+      AND EXISTS (SELECT 1 FROM incoming_event)
+  `;
 }
 
 export async function attachCreative(
@@ -210,7 +592,7 @@ export async function markPlacementPaid(input: {
       status = 'paid',
       checkout_session_id = ${input.sessionId},
       payment_id = ${input.paymentId},
-      customer_email = ${input.customerEmail},
+      customer_email = COALESCE(customer_email, ${input.customerEmail}),
       paid_at = COALESCE(paid_at, now())
     WHERE id = ${input.placementId}::uuid
       AND status IN ('reserved', 'expired', 'paid')
@@ -242,7 +624,7 @@ export async function markPaymentReview(input: {
       status = 'payment_review',
       checkout_session_id = ${input.sessionId},
       payment_id = ${input.paymentId},
-      customer_email = ${input.customerEmail}
+      customer_email = COALESCE(customer_email, ${input.customerEmail})
     WHERE id = ${input.placementId}::uuid
       AND EXISTS (SELECT 1 FROM incoming_event)
   `;
@@ -363,7 +745,7 @@ function getSiteStatsFromRow(row?: { visitor_count: number; online_count: number
 
 export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
   const sql = getSql();
-  const [paidRows, reservedRows] = await Promise.all([
+  const [paidRows, reservedRows, extensionRows] = await Promise.all([
     sql`
       SELECT
         id,
@@ -390,10 +772,24 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
       WHERE status = 'reserved'
         AND reservation_expires_at > now()
     `,
+    sql`
+      SELECT id, placement_id, x, y, width_cells, height_cells
+      FROM placement_extensions
+      WHERE status = 'reserved'
+        AND expires_at > now()
+    `,
   ]);
 
   const paid = paidRows as PaidRow[];
   const reserved = reservedRows as ReservedRow[];
+  const extensions = extensionRows as Array<{
+    id: string;
+    placement_id: string;
+    x: number;
+    y: number;
+    width_cells: number;
+    height_cells: number;
+  }>;
   const placements = paid.map((row) => ({
     id: row.id,
     brand: row.brand_name,
@@ -425,6 +821,15 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
         reserved: false,
       })),
       ...reserved.map((row) => ({
+        id: row.id,
+        x: Number(row.x),
+        y: Number(row.y),
+        w: Number(row.width_cells),
+        h: Number(row.height_cells),
+        reserved: true,
+      })),
+      // Pending extensions reserve their larger target rect so others cannot buy into it.
+      ...extensions.map((row) => ({
         id: row.id,
         x: Number(row.x),
         y: Number(row.y),

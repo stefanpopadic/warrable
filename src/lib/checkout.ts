@@ -8,6 +8,13 @@ import { isRectInViewport, viewportForLevel, type Rect } from "@/lib/auction";
 const MAX_CREATIVE_BYTES = 4 * 1024 * 1024;
 const ACCEPTED_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
+const emailSchema = z
+  .string()
+  .trim()
+  .email("Enter a valid email.")
+  .max(320, "Email is too long.")
+  .transform((value) => value.toLowerCase());
+
 const checkoutFields = z.object({
   brand: z
     .string()
@@ -16,12 +23,14 @@ const checkoutFields = z.object({
     .max(80, "Brand name must be 80 characters or less.")
     .transform((value) => value.replace(/\s+/g, " ")),
   website: z.string().trim().min(1, "Add a website."),
+  email: emailSchema,
   creativeFit: z.enum(["contain", "cover"]),
   x: z.coerce.number().int(),
   y: z.coerce.number().int(),
   w: z.coerce.number().int().min(1),
   h: z.coerce.number().int().min(1),
   termsAccepted: z.literal("true"),
+  extendPlacementId: z.string().trim().uuid().optional(),
 });
 
 function normalizeWebsite(value: string) {
@@ -47,20 +56,40 @@ export async function parseCheckoutFormData(
   formData: FormData,
   viewport: Rect = viewportForLevel(0),
 ) {
+  const extendRaw = formData.get("extendPlacementId");
   const parsed = checkoutFields.parse({
     brand: formData.get("brand"),
     website: formData.get("website"),
-    creativeFit: formData.get("creativeFit"),
+    email: formData.get("email"),
+    creativeFit: formData.get("creativeFit") ?? "contain",
     x: formData.get("x"),
     y: formData.get("y"),
     w: formData.get("w"),
     h: formData.get("h"),
     termsAccepted: formData.get("termsAccepted"),
+    extendPlacementId:
+      typeof extendRaw === "string" && extendRaw.trim() ? extendRaw.trim() : undefined,
   });
   const rect: Rect = { x: parsed.x, y: parsed.y, w: parsed.w, h: parsed.h };
 
   if (!isRectInViewport(rect, viewport)) {
     throw new Error("The selected area is outside the artboard.");
+  }
+
+  const isExtend = Boolean(parsed.extendPlacementId);
+
+  if (isExtend) {
+    return {
+      brandName: parsed.brand,
+      websiteUrl: normalizeWebsite(parsed.website),
+      email: parsed.email,
+      creativeFit: parsed.creativeFit,
+      rect,
+      extendPlacementId: parsed.extendPlacementId!,
+      creative: null as Blob | null,
+      mimeType: null as string | null,
+      extension: null as string | null,
+    };
   }
 
   const creative = formData.get("creative");
@@ -80,8 +109,10 @@ export async function parseCheckoutFormData(
   return {
     brandName: parsed.brand,
     websiteUrl: normalizeWebsite(parsed.website),
+    email: parsed.email,
     creativeFit: parsed.creativeFit,
     rect,
+    extendPlacementId: undefined as string | undefined,
     creative: new Blob([bytes], { type: detected.mime }),
     mimeType: detected.mime,
     extension: detected.ext === "jpg" ? "jpg" : detected.ext,

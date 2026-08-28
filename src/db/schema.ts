@@ -68,6 +68,42 @@ export const paymentEvents = pgTable("payment_events", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const placementExtensionStatus = pgEnum("placement_extension_status", [
+  "reserved",
+  "paid",
+  "expired",
+  "cancelled",
+]);
+
+export const placementExtensions = pgTable(
+  "placement_extensions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    placementId: uuid("placement_id")
+      .notNull()
+      .references(() => placements.id),
+    email: text("email").notNull(),
+    x: integer("x").notNull(),
+    y: integer("y").notNull(),
+    widthCells: integer("width_cells").notNull(),
+    heightCells: integer("height_cells").notNull(),
+    amountCents: integer("amount_cents").notNull(),
+    newAmountCents: integer("new_amount_cents").notNull(),
+    status: placementExtensionStatus("status").notNull().default("reserved"),
+    requesterHash: text("requester_hash").notNull(),
+    checkoutSessionId: text("checkout_session_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("placement_extensions_placement_idx").on(table.placementId),
+    index("placement_extensions_status_expires_idx").on(table.status, table.expiresAt),
+    uniqueIndex("placement_extensions_checkout_session_unique").on(table.checkoutSessionId),
+  ],
+);
+
 export const siteStats = pgTable("site_stats", {
   id: text("id").primaryKey(),
   visitorCount: bigint("visitor_count", { mode: "number" }).notNull().default(0),
@@ -77,3 +113,4 @@ export const siteStats = pgTable("site_stats", {
 
 export type Placement = typeof placements.$inferSelect;
 export type NewPlacement = typeof placements.$inferInsert;
+export type PlacementExtension = typeof placementExtensions.$inferSelect;

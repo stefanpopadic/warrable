@@ -507,8 +507,8 @@ function HomeContent({
   return (
     <PageShell
       leftRef={leftPanelRef}
-      initialSnapshot={initialSnapshot}
-      snapshotReady={initialReady}
+      initialSnapshot={snapshot}
+      snapshotReady={snapshotReady}
     >
       <section id="top" className="border-b border-border px-6 py-6 lg:px-8 lg:py-8">
         <div className="mx-auto mt-5 max-w-3xl text-left">

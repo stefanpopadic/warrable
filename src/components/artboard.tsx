@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Upload, X, AlertCircle, Shuffle, Trophy } from "lucide-react";
+import { Upload, X, AlertCircle, Trophy } from "lucide-react";
 import {
   CELL_PX,
   formatPixelPrice,
@@ -14,10 +14,11 @@ import {
   findAutoStackPlacement,
   freeCellsInViewport,
   isRectInViewport,
+  rectContains,
   rectsOverlap,
   type Rect,
 } from "@/lib/auction";
-import type { ArtboardSnapshot } from "@/lib/artboard-data";
+import type { ArtboardSnapshot, PublicPlacement } from "@/lib/artboard-data";
 import { emptyArtboardSnapshot } from "@/lib/artboard-data";
 import { recordPlacementClick } from "@/lib/placement-clicks";
 
@@ -102,20 +103,26 @@ type DragState = {
 
 function ArtboardGrid({
   placements,
+  occupied = [],
   sel,
   creative,
   creativeFit,
   viewport,
   interactive,
+  mustContain = null,
   onSelChange,
+  onPlacementActivate,
 }: {
   placements: ArtboardSnapshot["placements"];
+  occupied?: Rect[];
   sel: Sel;
   creative: string | null;
   creativeFit: "contain" | "cover";
   viewport: Rect;
   interactive: boolean;
+  mustContain?: Rect | null;
   onSelChange: (rect: Rect) => void;
+  onPlacementActivate?: (placement: PublicPlacement) => void;
 }) {
   const gridRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -149,9 +156,12 @@ function ArtboardGrid({
         ? moveRect(drag.origin, dx, dy, viewport)
         : resizeRect(drag.origin, drag.corner, dx, dy, viewport);
 
+    if (mustContain && !rectContains(next, mustContain)) return;
+
     // Reject rather than clamp on collision, so the box sticks at the last legal
-    // spot instead of tunnelling through a sold logo.
-    if (placements.some((p) => rectsOverlap(next, p))) return;
+    // spot instead of tunnelling through a sold or reserved logo.
+    const blockers = occupied.length > 0 ? occupied : placements;
+    if (blockers.some((p) => rectsOverlap(next, p))) return;
     onSelChange(next);
   };
 
@@ -165,26 +175,51 @@ function ArtboardGrid({
   return (
     <div ref={gridRef} className="absolute inset-0">
       {/* Existing Placements */}
-      {placements.map((b) => (
-        <a
-          key={b.id}
-          href={b.url}
-          target="_blank"
-          rel="noreferrer"
-          aria-label={`${b.brand}, ${usd(b.bidCents)}`}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => recordPlacementClick(b.id)}
-          className="absolute overflow-hidden ring-1 ring-white/15 transition-all duration-700 ease-out hover:z-20 hover:ring-2 hover:ring-white"
-          style={viewportStyle(b, viewport)}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
+      {placements.filter((b) => isRectInViewport(b, viewport)).map((b) => {
+        const className =
+          "absolute overflow-hidden ring-1 ring-white/15 transition-all duration-700 ease-out hover:z-20 hover:ring-2 hover:ring-white";
+        const style = viewportStyle(b, viewport);
+        const img = (
+          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={b.creative}
             alt={`${b.brand} creative`}
             className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain p-1.5"} bg-black/50 transition-transform duration-150`}
           />
-        </a>
-      ))}
+        );
+
+        if (interactive && onPlacementActivate) {
+          return (
+            <button
+              key={b.id}
+              type="button"
+              aria-label={`Extend ${b.brand}, ${usd(b.bidCents)}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onPlacementActivate(b)}
+              className={`${className} cursor-pointer`}
+              style={style}
+            >
+              {img}
+            </button>
+          );
+        }
+
+        return (
+          <a
+            key={b.id}
+            href={b.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`${b.brand}, ${usd(b.bidCents)}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => recordPlacementClick(b.id)}
+            className={className}
+            style={style}
+          >
+            {img}
+          </a>
+        );
+      })}
 
       {/* User Selection Preview — draggable and resizable while the buy panel is open */}
       {sel && (
@@ -234,20 +269,26 @@ function ArtboardGrid({
 
 function TShirtPreview({
   placements,
+  occupied = [],
   sel,
   creative,
   creativeFit,
   viewport,
   interactive,
+  mustContain = null,
   onSelChange,
+  onPlacementActivate,
 }: {
   placements: ArtboardSnapshot["placements"];
+  occupied?: Rect[];
   sel: Sel;
   creative: string | null;
   creativeFit: "contain" | "cover";
   viewport: Rect;
   interactive: boolean;
+  mustContain?: Rect | null;
   onSelChange: (rect: Rect) => void;
+  onPlacementActivate?: (placement: PublicPlacement) => void;
 }) {
   return (
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden px-4 py-6 sm:px-6 sm:py-8">
@@ -282,6 +323,14 @@ function TShirtPreview({
             stroke="#222"
             strokeWidth="1"
           />
+          <image
+            href="/1milliondollartshirt-domain.png"
+            x="59.2"
+            y="72"
+            width="201.6"
+            height="20.16"
+            preserveAspectRatio="xMidYMid meet"
+          />
         </svg>
 
         {/* Artboard Print Area on the back of shirt */}
@@ -289,7 +338,7 @@ function TShirtPreview({
           className="absolute overflow-hidden bg-[#0a0a0a] ring-1 ring-white/10 shadow-inner"
           style={{
             left: "18%",
-            top: "22%",
+            top: "23%",
             width: "63%",
             aspectRatio: `${viewport.w} / ${viewport.h}`,
           }}
@@ -297,12 +346,15 @@ function TShirtPreview({
           <div className="relative h-full w-full">
             <ArtboardGrid
               placements={placements}
+              occupied={occupied}
               sel={sel}
               creative={creative}
               creativeFit={creativeFit}
               viewport={viewport}
               interactive={interactive}
+              mustContain={mustContain}
               onSelChange={onSelChange}
+              onPlacementActivate={onPlacementActivate}
             />
           </div>
         </div>
@@ -327,14 +379,16 @@ export default function Artboard({
   const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("contain");
   const [brand, setBrand] = useState("");
   const [url, setUrl] = useState("");
+  const [email, setEmail] = useState("");
   const [amount, setAmount] = useState("25");
   const [bidFocused, setBidFocused] = useState(false);
   const [pixels, setPixels] = useState(String(MIN_PRINTED_PIXELS));
-  const [variationIndex, setVariationIndex] = useState(0);
   const [manualSel, setManualSel] = useState<Sel>(null);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
+  const [extending, setExtending] = useState<PublicPlacement | null>(null);
+  const [extendPrompt, setExtendPrompt] = useState<PublicPlacement | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -346,15 +400,24 @@ export default function Artboard({
 
   const viewport = snapshot.milestone.viewport;
 
-  // Existing placed rects for collision calculation
+  // Existing placed rects for collision (paid + reserved + pending extensions).
+  // While extending, ignore the placement being grown so the box can cover it.
   const placedRects: Rect[] = useMemo(() => {
-    return snapshot.placements.map((p) => ({
-      x: p.x,
-      y: p.y,
-      w: p.w,
-      h: p.h,
-    }));
-  }, [snapshot.placements]);
+    const source =
+      snapshot.occupied && snapshot.occupied.length > 0
+        ? snapshot.occupied
+        : (snapshot.placements ?? []).map((p) => ({
+            id: p.id,
+            x: p.x,
+            y: p.y,
+            w: p.w,
+            h: p.h,
+            reserved: false,
+          }));
+    return source
+      .filter((p) => !extending || p.id !== extending.id)
+      .map((p) => ({ x: p.x, y: p.y, w: p.w, h: p.h }));
+  }, [snapshot.occupied, snapshot.placements, extending]);
 
   const freeCells = useMemo(
     () => freeCellsInViewport(placedRects, viewport),
@@ -376,30 +439,37 @@ export default function Artboard({
     return Math.max(1, Math.round(targetPx / (CELL_PX * CELL_PX)));
   }, [targetPx]);
 
-  // Calculate auto-stack placement
+  // Calculate auto-stack placement (new buys only — extend always uses the original rect).
   const autoPlacedSel: Sel = useMemo(() => {
-    if (!buyOpen) return null;
+    if (!buyOpen || extending) return null;
     return findAutoStackPlacement({
       placements: placedRects,
       targetCells,
       creativeAspect,
-      variationIndex,
+      variationIndex: 0,
       viewport,
     });
-  }, [buyOpen, placedRects, targetCells, creativeAspect, variationIndex, viewport]);
+  }, [buyOpen, extending, placedRects, targetCells, creativeAspect, viewport]);
 
   // A hand-placed rect always wins over the auto-stacker until the buyer resets it.
   const sel: Sel = manualSel ?? autoPlacedSel;
 
   const effectivePixels = sel ? sel.w * sel.h * CELL_PX * CELL_PX : targetPx;
 
-  const totalCents = useMemo(() => {
-    return amountCentsForPixels(effectivePixels, snapshot.stats.pixelsSold);
-  }, [effectivePixels, snapshot.stats.pixelsSold]);
+  const pixelsSoldForPricing = extending
+    ? Math.max(0, snapshot.stats.pixelsSold - extending.pixels)
+    : snapshot.stats.pixelsSold;
 
-  useEffect(() => {
-    if (!bidFocused) setAmount(String(totalCents / 100));
-  }, [bidFocused, totalCents]);
+  const totalCents = useMemo(() => {
+    return amountCentsForPixels(effectivePixels, pixelsSoldForPricing);
+  }, [effectivePixels, pixelsSoldForPricing]);
+
+  const chargeCents = extending
+    ? Math.max(0, totalCents - extending.bidCents)
+    : totalCents;
+  const addedPixels = extending
+    ? Math.max(0, effectivePixels - extending.pixels)
+    : effectivePixels;
 
   const topBidder = snapshot.leaderboard[0] ?? null;
   const minimumPurchaseCents = amountCentsForPixels(
@@ -408,7 +478,7 @@ export default function Artboard({
   );
   const takesTopSpot = Boolean(topBidder && totalCents > topBidder.bidCents);
   const topBidTarget = useMemo(() => {
-    if (!topBidder) return null;
+    if (!topBidder || extending) return null;
 
     // The logo's aspect ratio means not every cell count forms a valid rectangle.
     // Find the first layout whose real checkout total beats the leader, so the CTA
@@ -429,7 +499,7 @@ export default function Artboard({
         placements: placedRects,
         targetCells: cells,
         creativeAspect,
-        variationIndex,
+        variationIndex: 0,
         viewport,
       });
       if (!placement) continue;
@@ -447,12 +517,12 @@ export default function Artboard({
     return null;
   }, [
     creativeAspect,
+    extending,
     freeCells,
     minimumPurchaseCents,
     placedRects,
     snapshot.stats.pixelsSold,
     topBidder,
-    variationIndex,
     viewport,
   ]);
 
@@ -465,19 +535,21 @@ export default function Artboard({
   // back to the auto-stacker.
   const syncFromAmount = useCallback(
     (v: string) => {
+      if (extending) return;
       setAmount(v);
       setManualSel(null);
       const dollars = Number(v.replace(/[^0-9.]/g, "")) || 0;
       const px = pixelsForBudget(Math.round(dollars * 100), snapshot.stats.pixelsSold);
       setPixels(String(clampPx(px)));
     },
-    [snapshot.stats.pixelsSold, clampPx],
+    [snapshot.stats.pixelsSold, clampPx, extending],
   );
 
   const beatTopBid = useCallback(() => {
+    if (extending) return;
     const targetCents = topBidTarget?.cents ?? minimumPurchaseCents;
     syncFromAmount(String(targetCents / 100));
-  }, [minimumPurchaseCents, syncFromAmount, topBidTarget]);
+  }, [extending, minimumPurchaseCents, syncFromAmount, topBidTarget]);
 
   // Dragging or resizing drives the price, so the budget and pixel fields follow the rect.
   const handleSelChange = useCallback(
@@ -485,30 +557,78 @@ export default function Artboard({
       setManualSel(rect);
       const px = rect.w * rect.h * CELL_PX * CELL_PX;
       setPixels(String(px));
-      setAmount(String(Math.round(amountCentsForPixels(px, snapshot.stats.pixelsSold) / 100)));
+      const priced = amountCentsForPixels(
+        px,
+        extending
+          ? Math.max(0, snapshot.stats.pixelsSold - extending.pixels)
+          : snapshot.stats.pixelsSold,
+      );
+      const display = extending ? Math.max(0, priced - extending.bidCents) : priced;
+      setAmount(String(Math.round(display / 100)));
     },
-    [snapshot.stats.pixelsSold],
+    [snapshot.stats.pixelsSold, extending],
   );
 
-  const shuffleSpot = useCallback(() => {
+  const clearExtendMode = useCallback(() => {
+    setExtending(null);
+    setExtendPrompt(null);
     setManualSel(null);
-    setVariationIndex((prev) => prev + 1);
+    setCreative(null);
+    setCreativeFile(null);
+    setCreativeAspect(1);
+    setBrand("");
+    setUrl("");
+    setHint(null);
+  }, []);
+
+  const beginExtend = useCallback((placement: PublicPlacement) => {
+    if (placement.isDemo) {
+      setHint("Demo logos cannot be extended.");
+      setExtendPrompt(null);
+      return;
+    }
+    setExtending(placement);
+    setExtendPrompt(null);
+    setBrand(placement.brand);
+    setUrl(placement.url.replace(/^https?:\/\//, ""));
+    setCreative(placement.creative);
+    setCreativeFile(null);
+    setCreativeFit(placement.creativeFit);
+    setManualSel({ x: placement.x, y: placement.y, w: placement.w, h: placement.h });
+    setPixels(String(placement.pixels));
+    setAmount("0");
+    setHint(null);
+
+    const img = new Image();
+    img.onload = () => {
+      if (img.width && img.height) setCreativeAspect(img.width / img.height);
+    };
+    img.src = placement.creative;
   }, []);
 
   // Closing the panel, or the shirt growing to a new milestone, drops a stale rect.
   useEffect(() => {
-    if (!buyOpen) setManualSel(null);
+    if (!buyOpen) {
+      setManualSel(null);
+      setExtending(null);
+      setExtendPrompt(null);
+    }
   }, [buyOpen]);
 
   useEffect(() => {
     setManualSel((current) => {
       if (!current) return null;
+      if (extending && !rectContains(current, extending)) return { ...extending };
       const stillValid =
         isRectInViewport(current, viewport) &&
         !placedRects.some((p) => rectsOverlap(current, p));
-      return stillValid ? current : null;
+      return stillValid ? current : extending ? { ...extending } : null;
     });
-  }, [viewport, placedRects]);
+  }, [viewport, placedRects, extending]);
+
+  useEffect(() => {
+    if (!bidFocused) setAmount(String(chargeCents / 100));
+  }, [bidFocused, chargeCents]);
 
   const handleCreativeUpload = (file: File) => {
     setCreativeFile(file);
@@ -526,12 +646,27 @@ export default function Artboard({
     img.src = objectUrl;
   };
 
-  const identityReady = Boolean(creativeFile && brand.trim() && url.trim());
+  const identityReady = Boolean(
+    brand.trim() &&
+      url.trim() &&
+      email.trim() &&
+      (extending ? creative : creativeFile),
+  );
   const checkoutDisabled =
-    !identityReady || !termsAccepted || checkoutLoading || !sel || snapshot.auctionClosed;
+    !identityReady ||
+    !termsAccepted ||
+    checkoutLoading ||
+    !sel ||
+    snapshot.auctionClosed ||
+    (extending ? chargeCents <= 0 : false);
 
   const placeBid = async () => {
-    if (!creativeFile || !termsAccepted || checkoutLoading || !sel) return;
+    if (!termsAccepted || checkoutLoading || !sel) return;
+    if (!extending && !creativeFile) return;
+    if (extending && chargeCents <= 0) {
+      setHint("Drag the corners to grow your space before purchasing.");
+      return;
+    }
 
     setCheckoutLoading(true);
     setHint(null);
@@ -544,13 +679,18 @@ export default function Artboard({
         ? website
         : `https://${website}`;
     formData.set("website", websiteWithProtocol);
+    formData.set("email", email.trim());
     formData.set("creativeFit", creativeFit);
     formData.set("x", String(sel.x));
     formData.set("y", String(sel.y));
     formData.set("w", String(sel.w));
     formData.set("h", String(sel.h));
     formData.set("termsAccepted", "true");
-    formData.set("creative", creativeFile);
+    if (extending) {
+      formData.set("extendPlacementId", extending.id);
+    } else if (creativeFile) {
+      formData.set("creative", creativeFile);
+    }
 
     try {
       const response = await fetch("/api/checkout", {
@@ -581,14 +721,57 @@ export default function Artboard({
       >
         <TShirtPreview
           placements={snapshot.placements}
+          occupied={placedRects}
           sel={sel}
           creative={creative}
           creativeFit={creativeFit}
           viewport={viewport}
           interactive={buyOpen && !snapshot.auctionClosed}
+          mustContain={extending}
           onSelChange={handleSelChange}
+          onPlacementActivate={(placement) => {
+            if (extending?.id === placement.id) return;
+            setExtendPrompt(placement);
+            setHint(null);
+          }}
         />
       </div>
+
+      {extendPrompt && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-sm border border-border bg-card p-5 text-left shadow-2xl">
+            <p className="font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+              Existing placement
+            </p>
+            <h3 className="mt-2 font-display text-2xl uppercase leading-none tracking-wide">
+              Extend {extendPrompt.brand}?
+            </h3>
+            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+              {extendPrompt.isDemo
+                ? "Demo logos cannot be extended. Pick a free spot for a new purchase."
+                : "Grow this logo and pay only for the new pixels. Use the same email from the original purchase."}
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              {!extendPrompt.isDemo && (
+                <button
+                  type="button"
+                  onClick={() => beginExtend(extendPrompt)}
+                  className="h-11 w-full bg-[var(--accent-yellow)] font-display text-sm tracking-wide text-black hover:bg-white"
+                >
+                  YES, EXTEND THIS BID
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setExtendPrompt(null)}
+                className="h-11 w-full border border-border font-display text-sm tracking-wide text-foreground hover:bg-secondary"
+              >
+                {extendPrompt.isDemo ? "CLOSE" : "NO, BUY A NEW SPOT"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Buy Panel Drawer */}
       <aside
@@ -649,13 +832,15 @@ export default function Artboard({
                   <p className="font-condensed text-[11px] text-muted-foreground">
                     Ratio: {creativeAspect.toFixed(2)} : 1
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="mt-1 font-condensed text-xs text-[var(--accent-yellow)] underline hover:text-white"
-                  >
-                    Change file
-                  </button>
+                  {!extending && (
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="mt-1 font-condensed text-xs text-[var(--accent-yellow)] underline hover:text-white"
+                    >
+                      Change file
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -683,7 +868,8 @@ export default function Artboard({
               onChange={(e) => setBrand(e.target.value)}
               placeholder="e.g. Acme Corp"
               maxLength={80}
-              className="h-10 w-full rounded border border-border bg-background px-3 font-sans text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground focus:outline-none"
+              readOnly={Boolean(extending)}
+              className="h-10 w-full rounded border border-border bg-background px-3 font-sans text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground focus:outline-none read-only:opacity-70"
             />
           </div>
 
@@ -697,9 +883,52 @@ export default function Artboard({
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="e.g. acme.com"
-              className="h-10 w-full rounded border border-border bg-background px-3 font-sans text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground focus:outline-none"
+              readOnly={Boolean(extending)}
+              className="h-10 w-full rounded border border-border bg-background px-3 font-sans text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground focus:outline-none read-only:opacity-70"
             />
           </div>
+
+          {/* Email */}
+          <div>
+            <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+              Email
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="e.g. you@brand.com"
+              className="h-10 w-full rounded border border-border bg-background px-3 font-sans text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground focus:outline-none"
+            />
+            {extending && (
+              <p className="mt-1.5 font-condensed text-[11px] text-muted-foreground">
+                Must match the email from your original purchase.
+              </p>
+            )}
+          </div>
+
+          {extending && (
+            <div className="flex items-start justify-between gap-3 border border-[var(--accent-yellow)]/40 bg-[var(--accent-yellow)]/10 p-3">
+              <div>
+                <p className="font-condensed text-[10px] uppercase tracking-widest text-[var(--accent-yellow)]">
+                  Extending
+                </p>
+                <p className="mt-1 font-display text-lg leading-none tracking-wide text-white">
+                  {extending.brand}
+                </p>
+                <p className="mt-1 font-condensed text-xs text-muted-foreground">
+                  Drag corners to grow. Pay only for new pixels.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={clearExtendMode}
+                className="shrink-0 font-condensed text-xs uppercase tracking-wider text-muted-foreground underline hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
           {/* Bid amount and live leaderboard target */}
           <div>
@@ -708,19 +937,11 @@ export default function Artboard({
                 htmlFor="bid-amount"
                 className="font-condensed text-xs uppercase tracking-widest text-muted-foreground"
               >
-                Your Bid
+                {extending ? "Add to bid" : "Your Bid"}
               </label>
-              <button
-                type="button"
-                onClick={shuffleSpot}
-                className="flex h-8 items-center gap-1.5 border border-[var(--accent-yellow)] px-3 font-display text-[11px] uppercase tracking-wide text-[var(--accent-yellow)] transition-colors hover:bg-[var(--accent-yellow)] hover:text-black"
-              >
-                <Shuffle className="h-3 w-3" />
-                Randomize spot
-              </button>
             </div>
 
-            {topBidder ? (
+            {!extending && topBidder ? (
               <div
                 className={`mb-3 border p-3 ${
                   takesTopSpot
@@ -768,7 +989,7 @@ export default function Artboard({
                   </p>
                 )}
               </div>
-            ) : (
+            ) : !extending ? (
               <button
                 type="button"
                 onClick={beatTopBid}
@@ -776,24 +997,35 @@ export default function Artboard({
               >
                 BE THE FIRST TOP BIDDER · {usd(minimumPurchaseCents)}
               </button>
-            )}
+            ) : null}
 
-            <div className="relative">
-              <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-display text-xl text-muted-foreground">
-                $
-              </span>
-              <input
-                id="bid-amount"
-                type="text"
-                inputMode="numeric"
-                aria-label="Your bid in USD"
-                value={amount}
-                onFocus={() => setBidFocused(true)}
-                onChange={(e) => syncFromAmount(e.target.value)}
-                onBlur={() => setBidFocused(false)}
-                className="h-14 w-full rounded border-2 border-[var(--accent-yellow)]/55 bg-background pl-10 pr-4 font-display text-2xl tracking-wide text-white focus:border-[var(--accent-yellow)] focus:outline-none"
-              />
-            </div>
+            {extending ? (
+              <div className="border-2 border-[var(--accent-yellow)]/55 bg-background px-4 py-3">
+                <p className="font-display text-2xl tracking-wide text-white">
+                  {usd(chargeCents)}
+                </p>
+                <p className="mt-1 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                  +{addedPixels.toLocaleString()} px · new total {usd(totalCents)}
+                </p>
+              </div>
+            ) : (
+              <div className="relative">
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-display text-xl text-muted-foreground">
+                  $
+                </span>
+                <input
+                  id="bid-amount"
+                  type="text"
+                  inputMode="numeric"
+                  aria-label="Your bid in USD"
+                  value={amount}
+                  onFocus={() => setBidFocused(true)}
+                  onChange={(e) => syncFromAmount(e.target.value)}
+                  onBlur={() => setBidFocused(false)}
+                  className="h-14 w-full rounded border-2 border-[var(--accent-yellow)]/55 bg-background pl-10 pr-4 font-display text-2xl tracking-wide text-white focus:border-[var(--accent-yellow)] focus:outline-none"
+                />
+              </div>
+            )}
           </div>
 
           {!sel && (
@@ -837,7 +1069,9 @@ export default function Artboard({
               ? "AUCTION CLOSED"
               : checkoutLoading
                 ? "RESERVING SPOT…"
-                : `PURCHASE · ${usd(totalCents)}`}
+                : extending
+                  ? `ADD · ${usd(chargeCents)}`
+                  : `PURCHASE · ${usd(chargeCents)}`}
           </button>
 
         </div>

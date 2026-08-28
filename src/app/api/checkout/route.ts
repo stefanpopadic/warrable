@@ -4,7 +4,10 @@ import { ZodError } from "zod";
 import {
   attachCheckoutSession,
   attachCreative,
+  attachExtensionCheckoutSession,
+  createPlacementExtension,
   getCurrentViewport,
+  releaseExtension,
   releasePlacement,
   reservePlacement,
 } from "@/db/placements";
@@ -24,20 +27,84 @@ function messageFromError(error: unknown) {
 
 export async function POST(request: Request) {
   let placementId: string | null = null;
+  let extensionId: string | null = null;
   let blobPathname: string | null = null;
 
   try {
     const viewport = await getCurrentViewport();
     const input = await parseCheckoutFormData(await request.formData(), viewport);
     const requesterHash = getRequesterHash(request);
+    const baseUrl = getCheckoutBaseUrl(request);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+    if (input.extendPlacementId) {
+      const extension = await createPlacementExtension({
+        placementId: input.extendPlacementId,
+        email: input.email,
+        rect: input.rect,
+        requesterHash,
+      });
+      extensionId = extension.id;
+
+      const successReturnUrl = new URL(`${baseUrl}/checkout/success`);
+      successReturnUrl.searchParams.set("placement_id", extension.placementId);
+
+      const session = await getStripe().checkout.sessions.create({
+        mode: "payment",
+        adaptive_pricing: { enabled: false },
+        customer_email: input.email,
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: "usd",
+              unit_amount: extension.amountCents,
+              product_data: {
+                name: `Expand shirt space — ${extension.brandName}`,
+                description: `+${extension.addedPixels.toLocaleString()} pixels on Million Dollar T-Shirt`,
+              },
+            },
+          },
+        ],
+        metadata: {
+          kind: "extension",
+          extension_id: extension.id,
+          placement_id: extension.placementId,
+          amount_cents: String(extension.amountCents),
+          new_amount_cents: String(extension.newAmountCents),
+          pixel_count: String(extension.pixelCount),
+          brand_name: extension.brandName,
+          x: String(input.rect.x),
+          y: String(input.rect.y),
+          w: String(input.rect.w),
+          h: String(input.rect.h),
+        },
+        success_url: `${successReturnUrl.toString()}&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${baseUrl}/checkout/cancel?extension_id=${extension.id}`,
+        expires_at: Math.floor(expiresAt.getTime() / 1000),
+      });
+
+      if (!session.id || !session.url) {
+        throw new Error("checkout_url_missing");
+      }
+
+      await attachExtensionCheckoutSession(extension.id, session.id, expiresAt);
+      return Response.json({ checkoutUrl: session.url }, { status: 201 });
+    }
+
     const reservation = await reservePlacement({
       brandName: input.brandName,
       websiteUrl: input.websiteUrl,
       creativeFit: input.creativeFit,
       rect: input.rect,
       requesterHash,
+      email: input.email,
     });
     placementId = reservation.id;
+
+    if (!input.creative || !input.mimeType || !input.extension) {
+      throw new Error("Upload a logo or image.");
+    }
 
     const pathname = `placements/${placementId}/${randomUUID()}.${input.extension}`;
     const blob = await put(pathname, input.creative, {
@@ -53,8 +120,6 @@ export async function POST(request: Request) {
       mimeType: input.mimeType,
     });
 
-    const baseUrl = getCheckoutBaseUrl(request);
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
     const amountCents = Number(reservation.amount_cents);
     const pixelCount = Number(reservation.pixel_count);
 
@@ -64,6 +129,7 @@ export async function POST(request: Request) {
     const session = await getStripe().checkout.sessions.create({
       mode: "payment",
       adaptive_pricing: { enabled: false },
+      customer_email: input.email,
       line_items: [
         {
           quantity: 1,
@@ -78,13 +144,14 @@ export async function POST(request: Request) {
         },
       ],
       metadata: {
+        kind: "placement",
         placement_id: placementId,
         amount_cents: String(amountCents),
         pixel_count: String(pixelCount),
         brand_name: input.brandName,
       },
       success_url: `${successReturnUrl.toString()}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/checkout/cancel`,
+      cancel_url: `${baseUrl}/checkout/cancel?placement_id=${placementId}`,
       expires_at: Math.floor(expiresAt.getTime() / 1000),
     });
 
@@ -96,6 +163,13 @@ export async function POST(request: Request) {
 
     return Response.json({ checkoutUrl: session.url }, { status: 201 });
   } catch (error) {
+    if (extensionId) {
+      try {
+        await releaseExtension(extensionId);
+      } catch {
+        // Expiry pass can clear it later.
+      }
+    }
     if (placementId) {
       try {
         const releasedPathname = await releasePlacement(placementId);
@@ -123,8 +197,31 @@ export async function POST(request: Request) {
       message.includes("valid PNG") ||
       message.includes("Website") ||
       message.includes("Invalid URL") ||
-      message.includes("outside the artboard")
+      message.includes("outside the artboard") ||
+      message.includes("Enter a valid email") ||
+      message.includes("email_required") ||
+      message.includes("email_mismatch") ||
+      message.includes("email_not_on_file") ||
+      message.includes("demo_not_extendable") ||
+      message.includes("must_contain_original") ||
+      message.includes("must_grow") ||
+      message.includes("placement_not_found")
     ) {
+      if (message.includes("email_mismatch")) {
+        return apiError("That email does not match the original purchase.", 403);
+      }
+      if (message.includes("email_not_on_file")) {
+        return apiError("This placement cannot be extended (no email on file).", 400);
+      }
+      if (message.includes("demo_not_extendable")) {
+        return apiError("Demo logos cannot be extended.", 400);
+      }
+      if (message.includes("must_contain_original") || message.includes("must_grow")) {
+        return apiError("Expand your existing space — it must grow and still cover the original.", 400);
+      }
+      if (message.includes("email_required") || message.includes("Enter a valid email")) {
+        return apiError("Enter a valid email.", 400);
+      }
       return apiError(
         message.includes("Invalid URL")
           ? "Enter a valid website URL (e.g. https://yourbrand.com)."
@@ -158,6 +255,7 @@ export async function POST(request: Request) {
     console.error("Checkout creation failed", {
       message,
       placementId,
+      extensionId,
     });
     return apiError("Checkout could not be started. Please try again.", 500);
   }
