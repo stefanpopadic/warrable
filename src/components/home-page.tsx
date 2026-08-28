@@ -512,49 +512,53 @@ function HomeContent({
     >
       <section id="top" className="border-b border-border px-6 py-6 lg:px-8 lg:py-8">
         <div className="mx-auto mt-5 max-w-3xl text-left">
-          <h1 className="text-center font-display text-[clamp(2.6rem,6vw,5rem)] leading-[0.95] tracking-tight">
-            THE WORLD&apos;S
-            <br />
-            MOST EXPENSIVE
-            <br />
-            T-SHIRT.
-          </h1>
-          <p className="mx-auto mt-5 max-w-md text-center text-lg text-muted-foreground">
-            Buy space on a real shirt, promote your brand, and become part of internet history.
-          </p>
+          <div>
+            <h1 className="text-center font-display text-[clamp(2.6rem,6vw,5rem)] leading-[0.95] tracking-tight">
+              THE WORLD&apos;S
+              <br />
+              MOST EXPENSIVE
+              <br />
+              T-SHIRT.
+            </h1>
+            <p className="mx-auto mt-5 max-w-md text-center text-lg text-muted-foreground">
+              Buy space on a real shirt, promote your brand, and become part of internet history.
+            </p>
 
-          <div className="mt-8 flex flex-col items-center">
             {!snapshot.auctionClosed && (
-              <BuyButton className="bg-foreground px-7 py-3 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground" />
+              <div className="mt-8 flex justify-center">
+                <BuyButton className="bg-foreground px-7 py-3 font-display text-base tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground" />
+              </div>
             )}
-            <div className={`${snapshot.auctionClosed ? "" : "mt-8"} w-full text-center`}>
-              <Countdown />
-            </div>
           </div>
 
-          <dl className="mt-8 grid grid-cols-3 border-y border-border">
-            {[
-              ["Total raised", usd(stats.raisedCents), null],
-              [
-                "Cost per px",
-                formatPixelPrice(stats.currentPriceCents),
-                stats.nextPriceCents ? `next ${formatPixelPrice(stats.nextPriceCents)}` : null,
-              ],
-              ["Pixels sold", stats.pixelsSold.toLocaleString(), null],
-            ].map(([k, v, sub]) => (
-              <div key={k} className="border-r border-border py-4 text-center last:border-r-0">
-                <dt className="mb-[5px] font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                  {k}
-                </dt>
-                <dd className="mt-1 font-display text-2xl leading-none">{v}</dd>
-                {sub ? (
-                  <dd className="mt-1 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                    {sub}
-                  </dd>
-                ) : null}
-              </div>
-            ))}
-          </dl>
+          <div className="mt-8">
+            <div className="w-full text-center">
+              <Countdown />
+            </div>
+            <dl className="mt-8 grid grid-cols-3 border-y border-border">
+              {[
+                ["Total raised", usd(stats.raisedCents), null],
+                [
+                  "Cost per px",
+                  formatPixelPrice(stats.currentPriceCents),
+                  null,
+                ],
+                ["Pixels sold", stats.pixelsSold.toLocaleString(), null],
+              ].map(([k, v, sub]) => (
+                <div key={k} className="border-r border-border py-4 text-center last:border-r-0">
+                  <dt className="mb-[5px] font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                    {k}
+                  </dt>
+                  <dd className="mt-1 font-display text-2xl leading-none">{v}</dd>
+                  {sub ? (
+                    <dd className="mt-1 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                      {sub}
+                    </dd>
+                  ) : null}
+                </div>
+              ))}
+            </dl>
+          </div>
 
           <div id="leaderboard" className="mt-6 scroll-mt-6 text-left">
             {leaderboard.length > 0 && (

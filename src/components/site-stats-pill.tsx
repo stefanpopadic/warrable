@@ -53,25 +53,29 @@ export function SiteStatsPill() {
 
   return (
     <div
-      className="hidden min-w-0 items-center gap-2 rounded-full border border-border/80 bg-secondary/40 px-3 py-1.5 font-condensed text-[11px] leading-none tracking-wide sm:flex sm:gap-2.5 sm:px-4 sm:text-xs"
+      className="hidden min-w-0 items-stretch border border-border bg-background font-condensed text-[10px] uppercase leading-none tracking-[0.14em] sm:flex"
       aria-label="Live site stats"
     >
-      <span className="inline-flex items-center gap-1.5 text-emerald-400">
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" aria-hidden="true" />
-        <span>{online.toLocaleString()} online</span>
+      <span className="inline-flex items-center gap-1.5 border-r border-border px-3 py-2 text-muted-foreground">
+        <span className="h-1.5 w-1.5 shrink-0 bg-emerald-400" aria-hidden="true" />
+        <strong className="font-normal tabular-nums text-foreground">
+          {online.toLocaleString()}
+        </strong>
+        live
       </span>
-      <span className="text-muted-foreground" aria-hidden="true">·</span>
-      <span className="truncate text-muted-foreground">
-        {visitors.toLocaleString()} visitors since launch
+      <span className="inline-flex items-center gap-1.5 border-r border-border px-3 py-2 text-muted-foreground">
+        <strong className="font-normal tabular-nums text-foreground">
+          {visitors.toLocaleString()}
+        </strong>
+        visitors
       </span>
-      <span className="text-muted-foreground" aria-hidden="true">·</span>
       <a
         href="https://datafa.st"
         target="_blank"
         rel="noreferrer"
-        className="shrink-0 text-foreground/80 transition-colors hover:text-foreground"
+        className="flex shrink-0 items-center px-3 py-2 text-foreground transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
       >
-        see stats →
+        Stats ↗
       </a>
     </div>
   );

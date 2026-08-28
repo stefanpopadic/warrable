@@ -8,8 +8,6 @@ export const MIN_PRINTED_PIXELS = 100;
 export const RESERVATION_MINUTES = 30;
 export const AUCTION_END = Date.UTC(2026, 8, 10, 8, 0, 0);
 
-export const QR_CODE_URL = "https://1milliondollartshirt.com";
-
 export const TOTAL_PIXELS = WORLD_COLS * WORLD_ROWS * CELL_PX * CELL_PX;
 export const TIER_PIXELS = 100_000;
 export const BASE_PRICE_PER_PIXEL_CENTS = 25;

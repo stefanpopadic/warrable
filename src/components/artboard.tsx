@@ -20,7 +20,6 @@ import {
 import type { ArtboardSnapshot } from "@/lib/artboard-data";
 import { emptyArtboardSnapshot } from "@/lib/artboard-data";
 import { recordPlacementClick } from "@/lib/placement-clicks";
-import { ShirtQRCode } from "@/components/qr-center";
 
 type Sel = Rect | null;
 
@@ -303,15 +302,12 @@ function TShirtPreview({
           />
         </svg>
 
-        {/* Orange QR Code at top collar / nape area */}
-        <ShirtQRCode />
-
         {/* Artboard Print Area on the back of shirt */}
         <div
           className="absolute overflow-hidden bg-[#0a0a0a] ring-1 ring-white/10 shadow-inner"
           style={{
             left: "18%",
-            top: "calc(17% + 60px)",
+            top: "calc(17% + 50px)",
             width: "63%",
             aspectRatio: `${viewport.w} / ${viewport.h}`,
           }}
@@ -659,7 +655,7 @@ export default function Artboard({
           {/* Creative Upload */}
           <div>
             <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-              1. Upload Logo / Creative
+              Upload Logo / Creative
             </label>
             <input
               ref={fileInputRef}
@@ -701,7 +697,7 @@ export default function Artboard({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="flex w-full flex-col items-center justify-center gap-2 rounded border border-dashed border-border bg-secondary/30 p-5 text-center transition-colors hover:border-foreground/40 hover:bg-secondary/50"
+                className="flex h-[270px] w-full flex-col items-center justify-center gap-2 rounded border border-dashed border-border bg-secondary/30 p-5 text-center transition-colors hover:border-foreground/40 hover:bg-secondary/50"
               >
                 <Upload className="h-6 w-6 text-muted-foreground" />
                 <span className="font-condensed text-xs uppercase tracking-wider text-muted-foreground">
@@ -714,7 +710,7 @@ export default function Artboard({
           {/* Brand Name */}
           <div>
             <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-              2. Brand Name
+              Brand Name
             </label>
             <input
               type="text"
@@ -729,7 +725,7 @@ export default function Artboard({
           {/* Website URL */}
           <div>
             <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-              3. Website URL
+              Website URL
             </label>
             <input
               type="text"
@@ -747,12 +743,12 @@ export default function Artboard({
                 htmlFor="bid-amount"
                 className="font-condensed text-xs uppercase tracking-widest text-muted-foreground"
               >
-                4. Your Bid
+                Your Bid
               </label>
               <button
                 type="button"
                 onClick={shuffleSpot}
-                className="flex items-center gap-1 font-condensed text-[11px] text-[var(--accent-yellow)] hover:text-white"
+                className="flex h-8 items-center gap-1.5 border border-[var(--accent-yellow)] px-3 font-display text-[11px] uppercase tracking-wide text-[var(--accent-yellow)] transition-colors hover:bg-[var(--accent-yellow)] hover:text-black"
               >
                 <Shuffle className="h-3 w-3" />
                 Randomize spot
@@ -761,25 +757,32 @@ export default function Artboard({
 
             {topBidder ? (
               <div
-                className={`mb-3 rounded border p-3 ${
+                className={`mb-3 border p-3 ${
                   takesTopSpot
                     ? "border-emerald-400/40 bg-emerald-400/10"
                     : "border-[var(--accent-yellow)]/35 bg-[var(--accent-yellow)]/8"
                 }`}
               >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="flex items-center gap-1.5 font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
-                      <Trophy className="h-3 w-3 text-[var(--accent-yellow)]" />
+                <div className="flex items-center">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center border border-[var(--accent-yellow)]/50 text-[var(--accent-yellow)]">
+                    <Trophy className="h-5 w-5" />
+                  </div>
+                  <div className="ml-3 min-w-0 flex-1">
+                    <p className="font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
                       Current #1
                     </p>
-                    <p className="mt-1 truncate font-display text-base tracking-wide text-white">
+                    <p className="mt-1 truncate font-display text-lg leading-none tracking-wide text-white">
                       {topBidder.brand}
                     </p>
                   </div>
-                  <span className="shrink-0 font-display text-xl text-white">
-                    {usd(topBidder.bidCents)}
-                  </span>
+                  <div className="ml-3 shrink-0 text-right">
+                    <p className="font-display text-xl leading-none text-white">
+                      {usd(topBidder.bidCents)}
+                    </p>
+                    <p className="mt-1 font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
+                      {topBidder.pixels.toLocaleString()} px
+                    </p>
+                  </div>
                 </div>
 
                 {takesTopSpot ? (
@@ -790,7 +793,7 @@ export default function Artboard({
                   <button
                     type="button"
                     onClick={beatTopBid}
-                    className="mt-3 h-10 w-full rounded bg-[var(--accent-yellow)] px-3 font-display text-sm tracking-wide text-black transition hover:bg-white"
+                    className="mt-3 h-10 w-full bg-[var(--accent-yellow)] px-3 font-display text-sm tracking-wide text-black transition hover:bg-white"
                   >
                     TAKE #1 WITH {usd(topBidTarget.cents)}
                   </button>
@@ -799,7 +802,7 @@ export default function Artboard({
                     More space must unlock before a new logo can take #1.
                   </p>
                 )}
-            </div>
+              </div>
             ) : (
               <button
                 type="button"
