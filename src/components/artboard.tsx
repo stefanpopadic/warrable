@@ -105,8 +105,6 @@ function ArtboardGrid({
   sel,
   creative,
   creativeFit,
-  hoveredPlacement,
-  setHoveredPlacement,
   viewport,
   interactive,
   onSelChange,
@@ -115,8 +113,6 @@ function ArtboardGrid({
   sel: Sel;
   creative: string | null;
   creativeFit: "contain" | "cover";
-  hoveredPlacement: ArtboardSnapshot["placements"][number] | null;
-  setHoveredPlacement: (p: ArtboardSnapshot["placements"][number] | null) => void;
   viewport: Rect;
   interactive: boolean;
   onSelChange: (rect: Rect) => void;
@@ -169,36 +165,26 @@ function ArtboardGrid({
   return (
     <div ref={gridRef} className="absolute inset-0">
       {/* Existing Placements */}
-      {placements.map((b) => {
-        const isHovered = hoveredPlacement?.id === b.id;
-        return (
-          <a
-            key={b.id}
-            href={b.url}
-            target="_blank"
-            rel="noreferrer"
-            title={`${b.brand} — ${usd(b.bidCents)}`}
-            aria-label={`${b.brand}, ${usd(b.bidCents)}`}
-            onPointerDown={(e) => e.stopPropagation()}
-            onMouseEnter={() => setHoveredPlacement(b)}
-            onMouseLeave={() => setHoveredPlacement(null)}
-            onClick={() => recordPlacementClick(b.id)}
-            className={`absolute overflow-hidden transition-all duration-700 ease-out ${
-              isHovered
-                ? "z-30 ring-2 ring-white scale-[1.03] shadow-lg shadow-white/20"
-                : "ring-1 ring-white/15 hover:z-20 hover:ring-2 hover:ring-white"
-            }`}
-            style={viewportStyle(b, viewport)}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={b.creative}
-              alt={`${b.brand} creative`}
-              className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain p-1.5"} bg-black/50 transition-transform duration-150`}
-            />
-          </a>
-        );
-      })}
+      {placements.map((b) => (
+        <a
+          key={b.id}
+          href={b.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`${b.brand}, ${usd(b.bidCents)}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => recordPlacementClick(b.id)}
+          className="absolute overflow-hidden ring-1 ring-white/15 transition-all duration-700 ease-out hover:z-20 hover:ring-2 hover:ring-white"
+          style={viewportStyle(b, viewport)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={b.creative}
+            alt={`${b.brand} creative`}
+            className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain p-1.5"} bg-black/50 transition-transform duration-150`}
+          />
+        </a>
+      ))}
 
       {/* User Selection Preview — draggable and resizable while the buy panel is open */}
       {sel && (
@@ -251,8 +237,6 @@ function TShirtPreview({
   sel,
   creative,
   creativeFit,
-  hoveredPlacement,
-  setHoveredPlacement,
   viewport,
   interactive,
   onSelChange,
@@ -261,8 +245,6 @@ function TShirtPreview({
   sel: Sel;
   creative: string | null;
   creativeFit: "contain" | "cover";
-  hoveredPlacement: ArtboardSnapshot["placements"][number] | null;
-  setHoveredPlacement: (p: ArtboardSnapshot["placements"][number] | null) => void;
   viewport: Rect;
   interactive: boolean;
   onSelChange: (rect: Rect) => void;
@@ -318,8 +300,6 @@ function TShirtPreview({
               sel={sel}
               creative={creative}
               creativeFit={creativeFit}
-              hoveredPlacement={hoveredPlacement}
-              setHoveredPlacement={setHoveredPlacement}
               viewport={viewport}
               interactive={interactive}
               onSelChange={onSelChange}
@@ -327,18 +307,6 @@ function TShirtPreview({
           </div>
         </div>
       </div>
-
-      {/* Floating Hover Info Pill */}
-      {hoveredPlacement && (
-        <div className="pointer-events-none absolute bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-full border border-white/20 bg-black/90 px-4 py-2 text-center shadow-xl backdrop-blur">
-          <p className="font-display text-sm tracking-wide text-white">
-            {hoveredPlacement.brand}
-          </p>
-          <p className="font-condensed text-xs text-muted-foreground">
-            {hoveredPlacement.pixels.toLocaleString()} pixels · {usd(hoveredPlacement.bidCents)}
-          </p>
-        </div>
-      )}
     </div>
   );
 }
@@ -367,7 +335,6 @@ export default function Artboard({
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
-  const [hoveredPlacement, setHoveredPlacement] = useState<ArtboardSnapshot["placements"][number] | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -617,8 +584,6 @@ export default function Artboard({
           sel={sel}
           creative={creative}
           creativeFit={creativeFit}
-          hoveredPlacement={hoveredPlacement}
-          setHoveredPlacement={setHoveredPlacement}
           viewport={viewport}
           interactive={buyOpen && !snapshot.auctionClosed}
           onSelChange={handleSelChange}

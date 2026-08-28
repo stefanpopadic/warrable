@@ -64,32 +64,40 @@ type DemoBrand = {
   logo: string;
   dollars: number;
   aspect: number;
+  variation: number;
 };
 
-// Ordered oldest purchase first. The first eleven brands fill the level 0
-// canvas to ~74% and tip the auction past $10k; the rest land in the level 1
-// ring that opens up, so the seeded board tells the growth story on its own.
+// Ordered by bid descending so the biggest demo ads claim the center first.
+// Variation values deliberately spread later ads around the growing cluster.
 const DEMO_BRANDS: DemoBrand[] = [
-  { name: "Amazon", website: "https://amazon.com", logo: "/logos/amazon.svg", dollars: 2400, aspect: 3.31 },
-  { name: "Apple", website: "https://apple.com", logo: "/logos/apple.svg", dollars: 1600, aspect: 1.0 },
-  { name: "Airbnb", website: "https://airbnb.com", logo: "/logos/airbnb.svg", dollars: 1400, aspect: 1.0 },
-  { name: "Netflix", website: "https://netflix.com", logo: "/logos/netflix.svg", dollars: 900, aspect: 1.0 },
-  { name: "YouTube", website: "https://youtube.com", logo: "/logos/youtube.svg", dollars: 750, aspect: 1.4 },
-  { name: "Shopify", website: "https://shopify.com", logo: "/logos/shopify.svg", dollars: 750, aspect: 1.0 },
-  { name: "Slack", website: "https://slack.com", logo: "/logos/slack.svg", dollars: 625, aspect: 1.0 },
-  { name: "Dropbox", website: "https://dropbox.com", logo: "/logos/dropbox.svg", dollars: 500, aspect: 1.0 },
-  { name: "Stripe", website: "https://stripe.com", logo: "/logos/stripe.svg", dollars: 400, aspect: 1.0 },
-  { name: "Figma", website: "https://figma.com", logo: "/logos/figma.svg", dollars: 300, aspect: 0.72 },
-  { name: "Webflow", website: "https://webflow.com", logo: "/logos/webflow.svg", dollars: 400, aspect: 1.0 },
-  { name: "Notion", website: "https://notion.so", logo: "/logos/notion.svg", dollars: 1200, aspect: 1.0 },
-  { name: "Vercel", website: "https://vercel.com", logo: "/logos/vercel.svg", dollars: 1200, aspect: 1.2 },
-  { name: "Linear", website: "https://linear.app", logo: "/logos/linear.svg", dollars: 1050, aspect: 1.0 },
-  { name: "Spotify", website: "https://spotify.com", logo: "/logos/spotify.svg", dollars: 900, aspect: 1.0 },
-  { name: "GitHub", website: "https://github.com", logo: "/logos/github.svg", dollars: 900, aspect: 1.0 },
-  { name: "OpenAI", website: "https://openai.com", logo: "/logos/openai.svg", dollars: 750, aspect: 1.0 },
-  { name: "Adobe", website: "https://adobe.com", logo: "/logos/adobe.svg", dollars: 600, aspect: 0.72 },
-  { name: "Adidas", website: "https://adidas.com", logo: "/logos/adidas.svg", dollars: 500, aspect: 1.0 },
-  { name: "Nike", website: "https://nike.com", logo: "/logos/nike.svg", dollars: 450, aspect: 1.8 },
+  { name: "Launch Club", website: "https://launchclub.ai/", logo: "/placeholders/launch-club.webp", dollars: 1600, aspect: 1, variation: 0 },
+  { name: "Voximo", website: "https://voximo.io/", logo: "/placeholders/voximo.webp", dollars: 1125, aspect: 1.88, variation: 7 },
+  { name: "daily.fun", website: "https://x.com/dailyfun", logo: "/placeholders/daily-fun.webp", dollars: 1000, aspect: 2.6, variation: 19 },
+  { name: "Outdo", website: "https://outdo.lol/", logo: "/placeholders/outdo.webp", dollars: 1000, aspect: 1.51, variation: 3 },
+  { name: "Viktor", website: "https://ref.viktor.com/1milllionpixels", logo: "/placeholders/viktor.webp", dollars: 900, aspect: 2.2, variation: 31 },
+  { name: "Zoom Into Art", website: "https://zoominto.art/collections/phone-cases", logo: "/placeholders/zoom-into-art.webp", dollars: 900, aspect: 1, variation: 11 },
+  { name: "BuyerBuilds", website: "https://buyerbuilds.com/", logo: "/placeholders/buyerbuilds.webp", dollars: 900, aspect: 1, variation: 23 },
+  { name: "MakePost AI", website: "https://makepostai.com/", logo: "/placeholders/makepost-ai.webp", dollars: 750, aspect: 3.42, variation: 5 },
+  { name: "Replit", website: "https://replit.com/", logo: "/placeholders/replit.webp", dollars: 750, aspect: 3.25, variation: 37 },
+  { name: "Metrician", website: "https://www.metrician.io/?utm_source=1millionpixels", logo: "/placeholders/metrician.webp", dollars: 750, aspect: 3.5, variation: 13 },
+  { name: "Rolevate", website: "https://rolevate.com/en", logo: "/placeholders/rolevate.webp", dollars: 750, aspect: 3.44, variation: 29 },
+  { name: "Solbid", website: "https://solbid.lol/", logo: "/placeholders/solbid.webp", dollars: 675, aspect: 3, variation: 17 },
+  { name: "GoldRock AI", website: "https://utk.ai/", logo: "/placeholders/goldrock-ai.webp", dollars: 675, aspect: 3, variation: 41 },
+  { name: "Auctra", website: "https://sellonauctra.com/", logo: "/placeholders/auctra.webp", dollars: 675, aspect: 3.06, variation: 2 },
+  { name: "ATC.com", website: "https://www.atc.com/", logo: "/placeholders/atc.webp", dollars: 675, aspect: 3, variation: 34 },
+  { name: "Agent Outbid", website: "https://agentoutbid.com/", logo: "/placeholders/agent-outbid.webp", dollars: 675, aspect: 3, variation: 8 },
+  { name: "DingDong", website: "https://www.dingdong.so/?utm_source=1millionpixels", logo: "/placeholders/dingdong.webp", dollars: 675, aspect: 3, variation: 26 },
+  { name: "GigaFaze", website: "https://gigafaze.com/", logo: "/placeholders/gigafaze.webp", dollars: 675, aspect: 3.02, variation: 14 },
+  { name: "Freyja", website: "https://freyja.software/", logo: "/placeholders/freyja.webp", dollars: 625, aspect: 1, variation: 38 },
+  { name: "Bazarak", website: "https://www.bazarak.me/", logo: "/placeholders/bazarak.webp", dollars: 625, aspect: 1, variation: 4 },
+  { name: "Adonis", website: "https://www.meetadonis.ai/", logo: "/placeholders/adonis.webp", dollars: 625, aspect: 1, variation: 32 },
+  { name: "Ranla", website: "https://ranla.ai/", logo: "/placeholders/ranla.webp", dollars: 600, aspect: 1.5, variation: 10 },
+  { name: "Ignite Images", website: "https://ignite-images.co.uk/ai-photo-booth/", logo: "/placeholders/ignite-images.webp", dollars: 600, aspect: 2.58, variation: 22 },
+  { name: "Still Lit", website: "https://stilllit.live/", logo: "/placeholders/still-lit.webp", dollars: 600, aspect: 0.67, variation: 6 },
+  { name: "Digital Finest", website: "https://www.digitalfinest.com/", logo: "/placeholders/digital-finest.webp", dollars: 525, aspect: 2.14, variation: 35 },
+  { name: "BlueAlpha", website: "https://bluealpha.ai/", logo: "/placeholders/bluealpha.webp", dollars: 500, aspect: 5, variation: 12 },
+  { name: "The Lobby", website: "https://www.thelobbynews.com/", logo: "/placeholders/the-lobby.webp", dollars: 500, aspect: 5, variation: 28 },
+  { name: "React Bits Pro", website: "https://pro.reactbits.dev/", logo: "/placeholders/react-bits-pro.webp", dollars: 400, aspect: 1, variation: 16 },
 ];
 
 type PlacedBrand = DemoBrand & { rect: Rect; amountCents: number; targetCells: number };
@@ -112,6 +120,7 @@ function buildLayout() {
       placements: rects,
       targetCells,
       creativeAspect: brand.aspect,
+      variationIndex: brand.variation,
       viewport,
     });
 
@@ -152,7 +161,7 @@ async function main() {
         x, y, width_cells, height_cells, amount_cents,
         status, requester_hash, reservation_expires_at, is_demo, paid_at
       ) VALUES (
-        ${brand.name}, ${brand.website}, ${brand.logo}, 'contain', 'image/svg+xml',
+        ${brand.name}, ${brand.website}, ${brand.logo}, 'cover', 'image/webp',
         ${brand.rect.x}, ${brand.rect.y}, ${brand.rect.w}, ${brand.rect.h}, ${brand.amountCents},
         'paid', 'demo-seed', now(), true, now()
       )
@@ -196,7 +205,7 @@ function renderSeedSql(placed: PlacedBrand[], raisedCents: number) {
   const values = placed
     .map(
       (b) =>
-        `  ('${b.name}', '${b.website}', '${b.logo}', 'contain', 'image/svg+xml', ` +
+        `  ('${b.name}', '${b.website}', '${b.logo}', 'cover', 'image/webp', ` +
         `${b.rect.x}, ${b.rect.y}, ${b.rect.w}, ${b.rect.h}, ${b.amountCents}, ` +
         `'paid', 'demo-seed', now(), true, now())`,
     )
