@@ -13,7 +13,9 @@
     "db:push": "dotenv -e .env.local -- drizzle-kit push",
     "placements:check": "tsx scripts/enforce-placement-bounds.ts",
     "placements:fix": "tsx scripts/enforce-placement-bounds.ts --fix",
-    "placements:repack": "tsx scripts/enforce-placement-bounds.ts --repack"
+    "placements:repack": "tsx scripts/enforce-placement-bounds.ts --repack",
+    "db:migrate": "tsx scripts/apply-migration.ts",
+    "verify:extend": "NODE_OPTIONS=--conditions=react-server tsx scripts/verify-extend.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
@@ -25,6 +27,7 @@
     "next": "^15.5.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "server-only": "^0.0.1",
     "stripe": "^22.6.0",
     "zod": "^4.4.3"
   },

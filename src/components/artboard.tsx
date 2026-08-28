@@ -11,20 +11,20 @@ import {
   MIN_PRINTED_PIXELS,
   amountCentsForPixels,
   pixelsForBudget,
-  findAutoStackPlacement,
-  freeCellsInViewport,
-  isRectInViewport,
-  rectContains,
-  rectsOverlap,
   type Rect,
 } from "@/lib/auction";
+import { bestDimensions, packBoard, sortLayoutItems, type LayoutItem } from "@/lib/layout";
 import type { ArtboardSnapshot, PublicPlacement } from "@/lib/artboard-data";
 import { emptyArtboardSnapshot } from "@/lib/artboard-data";
 import { recordPlacementClick } from "@/lib/placement-clicks";
 
-type Sel = Rect | null;
-
 const EMPTY_SNAPSHOT = emptyArtboardSnapshot();
+const MIN_CELLS = MIN_PRINTED_PIXELS / (CELL_PX * CELL_PX);
+
+/** Layout id for the logo being previewed. Never collides with a uuid. */
+const PREVIEW_ID = "__preview__";
+/** Sorts last among equal bids so the newcomer never displaces an existing tie. */
+const PREVIEW_TIE_BREAK = "\uffff";
 
 type Props = {
   className?: string;
@@ -45,156 +45,52 @@ function viewportStyle(rect: Rect, viewport: Rect) {
   };
 }
 
-const CORNERS = ["nw", "ne", "sw", "se"] as const;
-type Corner = (typeof CORNERS)[number];
-
-const CORNER_STYLES: Record<Corner, string> = {
-  nw: "-left-1 -top-1 cursor-nwse-resize",
-  ne: "-right-1 -top-1 cursor-nesw-resize",
-  sw: "-left-1 -bottom-1 cursor-nesw-resize",
-  se: "-right-1 -bottom-1 cursor-nwse-resize",
-};
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+function dollarsToCents(value: string) {
+  const parsed = Number(value.replace(/[^0-9.]/g, ""));
+  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed * 100)) : 0;
 }
-
-function moveRect(rect: Rect, dx: number, dy: number, viewport: Rect): Rect {
-  return {
-    ...rect,
-    x: clamp(rect.x + dx, viewport.x, viewport.x + viewport.w - rect.w),
-    y: clamp(rect.y + dy, viewport.y, viewport.y + viewport.h - rect.h),
-  };
-}
-
-/** Drag a corner while the opposite corner stays pinned. Never smaller than one cell. */
-function resizeRect(rect: Rect, corner: Corner, dx: number, dy: number, viewport: Rect): Rect {
-  const right = rect.x + rect.w;
-  const bottom = rect.y + rect.h;
-  const maxX = viewport.x + viewport.w;
-  const maxY = viewport.y + viewport.h;
-
-  let { x, y, w, h } = rect;
-
-  if (corner === "nw" || corner === "sw") {
-    x = clamp(rect.x + dx, viewport.x, right - 1);
-    w = right - x;
-  } else {
-    w = clamp(rect.w + dx, 1, maxX - rect.x);
-  }
-
-  if (corner === "nw" || corner === "ne") {
-    y = clamp(rect.y + dy, viewport.y, bottom - 1);
-    h = bottom - y;
-  } else {
-    h = clamp(rect.h + dy, 1, maxY - rect.y);
-  }
-
-  return { x, y, w, h };
-}
-
-type DragState = {
-  kind: "move" | "resize";
-  corner: Corner;
-  pointerX: number;
-  pointerY: number;
-  origin: Rect;
-};
 
 function ArtboardGrid({
   placements,
-  occupied = [],
-  sel,
+  layout,
+  preview,
   creative,
   creativeFit,
   viewport,
-  interactive,
-  mustContain = null,
-  onSelChange,
+  buyMode,
   onPlacementActivate,
 }: {
   placements: ArtboardSnapshot["placements"];
-  occupied?: Rect[];
-  sel: Sel;
+  layout: Map<string, Rect>;
+  preview: Rect | null;
   creative: string | null;
   creativeFit: "contain" | "cover";
   viewport: Rect;
-  interactive: boolean;
-  mustContain?: Rect | null;
-  onSelChange: (rect: Rect) => void;
+  buyMode: boolean;
   onPlacementActivate?: (placement: PublicPlacement) => void;
 }) {
-  const gridRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<DragState | null>(null);
-  const [dragging, setDragging] = useState(false);
-
-  const beginDrag = (event: React.PointerEvent, kind: DragState["kind"], corner: Corner) => {
-    if (!interactive || !sel) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = {
-      kind,
-      corner,
-      pointerX: event.clientX,
-      pointerY: event.clientY,
-      origin: sel,
-    };
-    setDragging(true);
-  };
-
-  const continueDrag = (event: React.PointerEvent) => {
-    const drag = dragRef.current;
-    const box = gridRef.current?.getBoundingClientRect();
-    if (!drag || !box || box.width === 0 || box.height === 0) return;
-
-    const dx = Math.round((event.clientX - drag.pointerX) / (box.width / viewport.w));
-    const dy = Math.round((event.clientY - drag.pointerY) / (box.height / viewport.h));
-
-    const next =
-      drag.kind === "move"
-        ? moveRect(drag.origin, dx, dy, viewport)
-        : resizeRect(drag.origin, drag.corner, dx, dy, viewport);
-
-    if (mustContain && !rectContains(next, mustContain)) return;
-
-    // Reject rather than clamp on collision, so the box sticks at the last legal
-    // spot instead of tunnelling through a sold or reserved logo.
-    const blockers = occupied.length > 0 ? occupied : placements;
-    if (blockers.some((p) => rectsOverlap(next, p))) return;
-    onSelChange(next);
-  };
-
-  const endDrag = (event: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    setDragging(false);
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  };
-
   return (
-    <div ref={gridRef} className="absolute inset-0">
-      {/* Existing Placements */}
-      {placements.filter((b) => isRectInViewport(b, viewport)).map((b) => {
+    <div className="absolute inset-0">
+      {placements.map((b) => {
+        const rect = layout.get(b.id) ?? b;
         const className =
           "absolute overflow-hidden ring-1 ring-white/15 transition-all duration-700 ease-out hover:z-20 hover:ring-2 hover:ring-white";
-        const style = viewportStyle(b, viewport);
+        const style = viewportStyle(rect, viewport);
         const img = (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={b.creative}
             alt={`${b.brand} creative`}
-            className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain p-1.5"} bg-black/50 transition-transform duration-150`}
+            className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain p-1.5"} bg-black/50`}
           />
         );
 
-        if (interactive && onPlacementActivate) {
+        if (buyMode && onPlacementActivate) {
           return (
             <button
               key={b.id}
               type="button"
               aria-label={`Extend ${b.brand}, ${usd(b.bidCents)}`}
-              onPointerDown={(e) => e.stopPropagation()}
               onClick={() => onPlacementActivate(b)}
               className={`${className} cursor-pointer`}
               style={style}
@@ -211,7 +107,6 @@ function ArtboardGrid({
             target="_blank"
             rel="noreferrer"
             aria-label={`${b.brand}, ${usd(b.bidCents)}`}
-            onPointerDown={(e) => e.stopPropagation()}
             onClick={() => recordPlacementClick(b.id)}
             className={className}
             style={style}
@@ -221,19 +116,10 @@ function ArtboardGrid({
         );
       })}
 
-      {/* User Selection Preview — draggable and resizable while the buy panel is open */}
-      {sel && (
+      {preview && (
         <div
-          onPointerDown={(e) => beginDrag(e, "move", "se")}
-          onPointerMove={continueDrag}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
-          className={`absolute z-25 border-2 border-[var(--accent-yellow)] bg-[var(--accent-yellow)]/10 shadow-[0_0_15px_rgba(255,230,0,0.4)] ${
-            interactive
-              ? `touch-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`
-              : "pointer-events-none animate-pulse overflow-hidden"
-          }`}
-          style={viewportStyle(sel, viewport)}
+          className="pointer-events-none absolute z-30 border-2 border-[var(--accent-yellow)] bg-[var(--accent-yellow)]/10 shadow-[0_0_15px_rgba(255,230,0,0.4)] transition-all duration-500 ease-out"
+          style={viewportStyle(preview, viewport)}
         >
           {creative ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -248,19 +134,6 @@ function ArtboardGrid({
               YOUR SPOT
             </div>
           )}
-
-          {interactive &&
-            CORNERS.map((corner) => (
-              <span
-                key={corner}
-                role="presentation"
-                onPointerDown={(e) => beginDrag(e, "resize", corner)}
-                onPointerMove={continueDrag}
-                onPointerUp={endDrag}
-                onPointerCancel={endDrag}
-                className={`absolute h-2.5 w-2.5 touch-none rounded-[1px] border border-black/70 bg-[var(--accent-yellow)] ${CORNER_STYLES[corner]}`}
-              />
-            ))}
         </div>
       )}
     </div>
@@ -269,25 +142,21 @@ function ArtboardGrid({
 
 function TShirtPreview({
   placements,
-  occupied = [],
-  sel,
+  layout,
+  preview,
   creative,
   creativeFit,
   viewport,
-  interactive,
-  mustContain = null,
-  onSelChange,
+  buyMode,
   onPlacementActivate,
 }: {
   placements: ArtboardSnapshot["placements"];
-  occupied?: Rect[];
-  sel: Sel;
+  layout: Map<string, Rect>;
+  preview: Rect | null;
   creative: string | null;
   creativeFit: "contain" | "cover";
   viewport: Rect;
-  interactive: boolean;
-  mustContain?: Rect | null;
-  onSelChange: (rect: Rect) => void;
+  buyMode: boolean;
   onPlacementActivate?: (placement: PublicPlacement) => void;
 }) {
   return (
@@ -346,14 +215,12 @@ function TShirtPreview({
           <div className="relative h-full w-full">
             <ArtboardGrid
               placements={placements}
-              occupied={occupied}
-              sel={sel}
+              layout={layout}
+              preview={preview}
               creative={creative}
               creativeFit={creativeFit}
               viewport={viewport}
-              interactive={interactive}
-              mustContain={mustContain}
-              onSelChange={onSelChange}
+              buyMode={buyMode}
               onPlacementActivate={onPlacementActivate}
             />
           </div>
@@ -368,7 +235,6 @@ export default function Artboard({
   buyOpen = false,
   onClose,
   initialSnapshot,
-  snapshotReady = false,
 }: Props) {
   const [snapshot, setSnapshot] = useState<ArtboardSnapshot>(
     initialSnapshot ?? EMPTY_SNAPSHOT,
@@ -376,14 +242,12 @@ export default function Artboard({
   const [creative, setCreative] = useState<string | null>(null);
   const [creativeFile, setCreativeFile] = useState<File | null>(null);
   const [creativeAspect, setCreativeAspect] = useState<number>(1.0);
-  const [creativeFit, setCreativeFit] = useState<"contain" | "cover">("contain");
+  const [creativeFit] = useState<"contain" | "cover">("contain");
   const [brand, setBrand] = useState("");
   const [url, setUrl] = useState("");
   const [email, setEmail] = useState("");
   const [amount, setAmount] = useState("25");
   const [bidFocused, setBidFocused] = useState(false);
-  const [pixels, setPixels] = useState(String(MIN_PRINTED_PIXELS));
-  const [manualSel, setManualSel] = useState<Sel>(null);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
@@ -393,280 +257,269 @@ export default function Artboard({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (initialSnapshot) {
-      setSnapshot(initialSnapshot);
-    }
+    if (initialSnapshot) setSnapshot(initialSnapshot);
   }, [initialSnapshot]);
 
   const viewport = snapshot.milestone.viewport;
+  const pixelsSold = snapshot.stats.pixelsSold;
 
-  // Existing placed rects for collision (paid + reserved + pending extensions).
-  // While extending, ignore the placement being grown so the box can cover it.
-  const placedRects: Rect[] = useMemo(() => {
-    const source =
-      snapshot.occupied && snapshot.occupied.length > 0
-        ? snapshot.occupied
-        : (snapshot.placements ?? []).map((p) => ({
-            id: p.id,
-            x: p.x,
-            y: p.y,
-            w: p.w,
-            h: p.h,
-            reserved: false,
-          }));
-    return source
-      .filter((p) => !extending || p.id !== extending.id)
-      .map((p) => ({ x: p.x, y: p.y, w: p.w, h: p.h }));
-  }, [snapshot.occupied, snapshot.placements, extending]);
-
-  const freeCells = useMemo(
-    () => freeCellsInViewport(placedRects, viewport),
-    [placedRects, viewport],
+  // Every paid logo is a layout item; reservations are fixed obstacles.
+  const paidItems = useMemo<LayoutItem[]>(
+    () =>
+      (snapshot.occupied ?? [])
+        .filter((o) => !o.reserved)
+        .map((o) => ({
+          id: o.id,
+          w: o.w,
+          h: o.h,
+          bidCents: o.bidCents,
+          tieBreak: o.tieBreak,
+        })),
+    [snapshot.occupied],
   );
 
-  // Nobody can buy more than the current milestone has unlocked, so both inputs
-  // clamp to it rather than quoting a price for space that does not exist yet.
-  const maxPurchasablePx = Math.max(MIN_PRINTED_PIXELS, freeCells * CELL_PX * CELL_PX);
-
-  // Target pixels from input
-  const targetPx = useMemo(() => {
-    const raw = Number(pixels.replace(/[^0-9.]/g, "")) || 0;
-    return Math.min(maxPurchasablePx, Math.max(MIN_PRINTED_PIXELS, Math.round(raw)));
-  }, [pixels, maxPurchasablePx]);
-
-  // Target grid cells (1 cell = 100 printed pixels)
-  const targetCells = useMemo(() => {
-    return Math.max(1, Math.round(targetPx / (CELL_PX * CELL_PX)));
-  }, [targetPx]);
-
-  // Calculate auto-stack placement (new buys only — extend always uses the original rect).
-  const autoPlacedSel: Sel = useMemo(() => {
-    if (!buyOpen || extending) return null;
-    return findAutoStackPlacement({
-      placements: placedRects,
-      targetCells,
-      creativeAspect,
-      variationIndex: 0,
-      viewport,
-    });
-  }, [buyOpen, extending, placedRects, targetCells, creativeAspect, viewport]);
-
-  // A hand-placed rect always wins over the auto-stacker until the buyer resets it.
-  const sel: Sel = manualSel ?? autoPlacedSel;
-
-  const effectivePixels = sel ? sel.w * sel.h * CELL_PX * CELL_PX : targetPx;
-
-  const pixelsSoldForPricing = extending
-    ? Math.max(0, snapshot.stats.pixelsSold - extending.pixels)
-    : snapshot.stats.pixelsSold;
-
-  const totalCents = useMemo(() => {
-    return amountCentsForPixels(effectivePixels, pixelsSoldForPricing);
-  }, [effectivePixels, pixelsSoldForPricing]);
-
-  const chargeCents = extending
-    ? Math.max(0, totalCents - extending.bidCents)
-    : totalCents;
-  const addedPixels = extending
-    ? Math.max(0, effectivePixels - extending.pixels)
-    : effectivePixels;
-
-  const topBidder = snapshot.leaderboard[0] ?? null;
-  const minimumPurchaseCents = amountCentsForPixels(
-    MIN_PRINTED_PIXELS,
-    snapshot.stats.pixelsSold,
+  const reservedRects = useMemo<Rect[]>(
+    () =>
+      (snapshot.occupied ?? [])
+        .filter((o) => o.reserved)
+        .map((o) => ({ x: o.x, y: o.y, w: o.w, h: o.h })),
+    [snapshot.occupied],
   );
-  const takesTopSpot = Boolean(topBidder && totalCents > topBidder.bidCents);
-  const topBidTarget = useMemo(() => {
-    if (!topBidder || extending) return null;
 
-    // The logo's aspect ratio means not every cell count forms a valid rectangle.
-    // Find the first layout whose real checkout total beats the leader, so the CTA
-    // never promises one amount and produces another.
-    const firstCandidateCells = Math.max(
-      1,
-      Math.ceil(
-        pixelsForBudget(
-          topBidder.bidCents + minimumPurchaseCents,
-          snapshot.stats.pixelsSold,
-        ) /
-          (CELL_PX * CELL_PX),
-      ),
-    );
+  const freeCells = useMemo(() => {
+    const used =
+      paidItems.reduce((total, item) => total + item.w * item.h, 0) +
+      reservedRects.reduce((total, rect) => total + rect.w * rect.h, 0) +
+      snapshot.stats.reservedCells;
+    return Math.max(0, viewport.w * viewport.h - used);
+  }, [paidItems, reservedRects, snapshot.stats.reservedCells, viewport]);
 
-    for (let cells = firstCandidateCells; cells <= freeCells; cells++) {
-      const placement = findAutoStackPlacement({
-        placements: placedRects,
-        targetCells: cells,
-        creativeAspect,
-        variationIndex: 0,
-        viewport,
-      });
-      if (!placement) continue;
+  const budgetCents = useMemo(() => dollarsToCents(amount), [amount]);
 
-      const placementPixels = placement.w * placement.h * CELL_PX * CELL_PX;
-      const placementCents = amountCentsForPixels(
-        placementPixels,
-        snapshot.stats.pixelsSold,
+  const extendingAspect = extending ? extending.w / extending.h : 1;
+  const extendingCells = extending ? extending.w * extending.h : 0;
+
+  /**
+   * Money in, shape out. A budget becomes cells, cells become a rectangle that
+   * keeps the logo's proportions, and that rectangle sets the real price.
+   */
+  const quote = useMemo(() => {
+    if (extending) {
+      const requested = Math.max(
+        1,
+        Math.round(pixelsForBudget(budgetCents, pixelsSold) / (CELL_PX * CELL_PX)),
       );
-      if (placementCents > topBidder.bidCents) {
-        return { cents: placementCents, pixels: placementPixels };
-      }
+      const capped = Math.min(requested, Math.max(1, freeCells));
+      const dims = bestDimensions(extendingCells + capped, extendingAspect, viewport);
+      const addedCells = Math.max(0, dims.w * dims.h - extendingCells);
+      const chargeCents = amountCentsForPixels(
+        addedCells * CELL_PX * CELL_PX,
+        pixelsSold,
+      );
+      return {
+        dims,
+        cells: dims.w * dims.h,
+        addedCells,
+        chargeCents,
+        totalCents: extending.bidCents + chargeCents,
+      };
     }
 
+    const requested = Math.max(
+      MIN_CELLS,
+      Math.round(pixelsForBudget(budgetCents, pixelsSold) / (CELL_PX * CELL_PX)),
+    );
+    const capped = Math.min(requested, Math.max(MIN_CELLS, freeCells));
+    const dims = bestDimensions(capped, creativeAspect, viewport);
+    const cells = dims.w * dims.h;
+    const chargeCents = amountCentsForPixels(cells * CELL_PX * CELL_PX, pixelsSold);
+    return { dims, cells, addedCells: cells, chargeCents, totalCents: chargeCents };
+  }, [
+    budgetCents,
+    creativeAspect,
+    extending,
+    extendingAspect,
+    extendingCells,
+    freeCells,
+    pixelsSold,
+    viewport,
+  ]);
+
+  const showPreview = buyOpen && !snapshot.auctionClosed && quote.addedCells > 0;
+
+  // The whole board is a function of the bids, so a preview is just a repack with
+  // the buyer's logo folded in. Others visibly shuffle as the amount changes.
+  const previewItems = useMemo<LayoutItem[]>(() => {
+    if (!showPreview) return paidItems;
+
+    if (extending) {
+      return paidItems.map((item) =>
+        item.id === extending.id
+          ? { ...item, w: quote.dims.w, h: quote.dims.h, bidCents: quote.totalCents }
+          : item,
+      );
+    }
+
+    return [
+      ...paidItems,
+      {
+        id: PREVIEW_ID,
+        w: quote.dims.w,
+        h: quote.dims.h,
+        bidCents: quote.chargeCents,
+        tieBreak: PREVIEW_TIE_BREAK,
+      },
+    ];
+  }, [extending, paidItems, quote, showPreview]);
+
+  const packed = useMemo(
+    () => packBoard(previewItems, viewport, { blocked: reservedRects }),
+    [previewItems, reservedRects, viewport],
+  );
+
+  const layout = useMemo(() => {
+    const map = new Map<string, Rect>();
+    for (const item of packed ?? []) {
+      map.set(item.id, { x: item.x, y: item.y, w: item.w, h: item.h });
+    }
+    return map;
+  }, [packed]);
+
+  const previewRect = showPreview
+    ? layout.get(extending ? extending.id : PREVIEW_ID) ?? null
+    : null;
+
+  const myRank = useMemo(() => {
+    if (!showPreview) return null;
+    const id = extending ? extending.id : PREVIEW_ID;
+    return sortLayoutItems(previewItems).findIndex((item) => item.id === id) + 1;
+  }, [extending, previewItems, showPreview]);
+
+  const topBidder = snapshot.leaderboard[0] ?? null;
+  const isTopBidder = Boolean(myRank === 1 && showPreview);
+
+  /**
+   * Smallest spend that genuinely clears the leader. Rounding a bid into a whole
+   * rectangle can shave cells, so the CTA walks up until the real price wins.
+   */
+  const takeTopCents = useMemo(() => {
+    if (!topBidder) return null;
+    const target = topBidder.bidCents;
+
+    if (extending) {
+      if (extending.bidCents > target) return null;
+      const needed = Math.max(1, target - extending.bidCents + 1);
+      const start = Math.max(
+        1,
+        Math.round(pixelsForBudget(needed, pixelsSold) / (CELL_PX * CELL_PX)),
+      );
+      for (let added = start; added <= freeCells; added++) {
+        const dims = bestDimensions(extendingCells + added, extendingAspect, viewport);
+        const realAdded = dims.w * dims.h - extendingCells;
+        if (realAdded < 1) continue;
+        const delta = amountCentsForPixels(realAdded * CELL_PX * CELL_PX, pixelsSold);
+        if (extending.bidCents + delta > target) return delta;
+      }
+      return null;
+    }
+
+    const start = Math.max(
+      MIN_CELLS,
+      Math.round(pixelsForBudget(target, pixelsSold) / (CELL_PX * CELL_PX)),
+    );
+    for (let cells = start; cells <= freeCells; cells++) {
+      const dims = bestDimensions(cells, creativeAspect, viewport);
+      const price = amountCentsForPixels(dims.w * dims.h * CELL_PX * CELL_PX, pixelsSold);
+      if (price > target) return price;
+    }
     return null;
   }, [
     creativeAspect,
     extending,
+    extendingAspect,
+    extendingCells,
     freeCells,
-    minimumPurchaseCents,
-    placedRects,
-    snapshot.stats.pixelsSold,
+    pixelsSold,
     topBidder,
     viewport,
   ]);
 
-  const clampPx = useCallback(
-    (px: number) => Math.min(maxPurchasablePx, Math.max(MIN_PRINTED_PIXELS, px)),
-    [maxPurchasablePx],
-  );
-
-  // Typing a budget or a pixel count means "size this for me", so it hands control
-  // back to the auto-stacker.
-  const syncFromAmount = useCallback(
-    (v: string) => {
-      if (extending) return;
-      setAmount(v);
-      setManualSel(null);
-      const dollars = Number(v.replace(/[^0-9.]/g, "")) || 0;
-      const px = pixelsForBudget(Math.round(dollars * 100), snapshot.stats.pixelsSold);
-      setPixels(String(clampPx(px)));
-    },
-    [snapshot.stats.pixelsSold, clampPx, extending],
-  );
-
-  const beatTopBid = useCallback(() => {
-    if (extending) return;
-    const targetCents = topBidTarget?.cents ?? minimumPurchaseCents;
-    syncFromAmount(String(targetCents / 100));
-  }, [extending, minimumPurchaseCents, syncFromAmount, topBidTarget]);
-
-  // Dragging or resizing drives the price, so the budget and pixel fields follow the rect.
-  const handleSelChange = useCallback(
-    (rect: Rect) => {
-      setManualSel(rect);
-      const px = rect.w * rect.h * CELL_PX * CELL_PX;
-      setPixels(String(px));
-      const priced = amountCentsForPixels(
-        px,
-        extending
-          ? Math.max(0, snapshot.stats.pixelsSold - extending.pixels)
-          : snapshot.stats.pixelsSold,
-      );
-      const display = extending ? Math.max(0, priced - extending.bidCents) : priced;
-      setAmount(String(Math.round(display / 100)));
-    },
-    [snapshot.stats.pixelsSold, extending],
-  );
+  const setAmountCents = useCallback((cents: number) => {
+    setAmount(String(Math.max(0, Math.round(cents / 100))));
+  }, []);
 
   const clearExtendMode = useCallback(() => {
     setExtending(null);
     setExtendPrompt(null);
-    setManualSel(null);
     setCreative(null);
     setCreativeFile(null);
     setCreativeAspect(1);
     setBrand("");
     setUrl("");
+    setEmail("");
+    setAmount("25");
     setHint(null);
   }, []);
 
-  const beginExtend = useCallback((placement: PublicPlacement) => {
-    if (placement.isDemo) {
-      setHint("Demo logos cannot be extended.");
+  const beginExtend = useCallback(
+    (placement: PublicPlacement) => {
+      if (placement.isDemo) {
+        setHint("Demo logos cannot be extended.");
+        setExtendPrompt(null);
+        return;
+      }
+      setExtending(placement);
       setExtendPrompt(null);
-      return;
-    }
-    setExtending(placement);
-    setExtendPrompt(null);
-    setBrand(placement.brand);
-    setUrl(placement.url.replace(/^https?:\/\//, ""));
-    setCreative(placement.creative);
-    setCreativeFile(null);
-    setCreativeFit(placement.creativeFit);
-    setManualSel({ x: placement.x, y: placement.y, w: placement.w, h: placement.h });
-    setPixels(String(placement.pixels));
-    setAmount("0");
-    setHint(null);
+      setBrand(placement.brand);
+      setUrl(placement.url.replace(/^https?:\/\//, ""));
+      setCreative(placement.creative);
+      setCreativeFile(null);
+      setCreativeAspect(placement.w / placement.h);
+      setAmount("100");
+      setHint(null);
+    },
+    [],
+  );
 
-    const img = new Image();
-    img.onload = () => {
-      if (img.width && img.height) setCreativeAspect(img.width / img.height);
-    };
-    img.src = placement.creative;
-  }, []);
-
-  // Closing the panel, or the shirt growing to a new milestone, drops a stale rect.
+  // Closing the panel drops any half-finished extend.
   useEffect(() => {
     if (!buyOpen) {
-      setManualSel(null);
       setExtending(null);
       setExtendPrompt(null);
     }
   }, [buyOpen]);
 
+  // Snap the field to what the money actually buys, but never while typing.
   useEffect(() => {
-    setManualSel((current) => {
-      if (!current) return null;
-      if (extending && !rectContains(current, extending)) return { ...extending };
-      const stillValid =
-        isRectInViewport(current, viewport) &&
-        !placedRects.some((p) => rectsOverlap(current, p));
-      return stillValid ? current : extending ? { ...extending } : null;
-    });
-  }, [viewport, placedRects, extending]);
-
-  useEffect(() => {
-    if (!bidFocused) setAmount(String(chargeCents / 100));
-  }, [bidFocused, chargeCents]);
+    if (!bidFocused) setAmountCents(quote.chargeCents);
+  }, [bidFocused, quote.chargeCents, setAmountCents]);
 
   const handleCreativeUpload = (file: File) => {
     setCreativeFile(file);
     const objectUrl = URL.createObjectURL(file);
     setCreative(objectUrl);
 
-    // Detect image dimensions to preserve natural aspect ratio
     const img = new Image();
     img.onload = () => {
-      if (img.width && img.height) {
-        const aspect = img.width / img.height;
-        setCreativeAspect(aspect);
-      }
+      if (img.width && img.height) setCreativeAspect(img.width / img.height);
     };
     img.src = objectUrl;
   };
 
   const identityReady = Boolean(
-    brand.trim() &&
-      url.trim() &&
-      email.trim() &&
-      (extending ? creative : creativeFile),
+    brand.trim() && url.trim() && email.trim() && (extending ? creative : creativeFile),
   );
   const checkoutDisabled =
     !identityReady ||
     !termsAccepted ||
     checkoutLoading ||
-    !sel ||
     snapshot.auctionClosed ||
-    (extending ? chargeCents <= 0 : false);
+    quote.addedCells < 1 ||
+    quote.chargeCents <= 0 ||
+    !packed;
 
   const placeBid = async () => {
-    if (!termsAccepted || checkoutLoading || !sel) return;
-    if (!extending && !creativeFile) return;
-    if (extending && chargeCents <= 0) {
-      setHint("Drag the corners to grow your space before purchasing.");
-      return;
-    }
+    if (checkoutDisabled) return;
 
     setCheckoutLoading(true);
     setHint(null);
@@ -674,17 +527,16 @@ export default function Artboard({
     const formData = new FormData();
     formData.set("brand", brand.trim());
     const website = url.trim();
-    const websiteWithProtocol =
+    formData.set(
+      "website",
       website.startsWith("http://") || website.startsWith("https://")
         ? website
-        : `https://${website}`;
-    formData.set("website", websiteWithProtocol);
+        : `https://${website}`,
+    );
     formData.set("email", email.trim());
     formData.set("creativeFit", creativeFit);
-    formData.set("x", String(sel.x));
-    formData.set("y", String(sel.y));
-    formData.set("w", String(sel.w));
-    formData.set("h", String(sel.h));
+    formData.set("cells", String(quote.addedCells));
+    formData.set("aspect", String(creativeAspect));
     formData.set("termsAccepted", "true");
     if (extending) {
       formData.set("extendPlacementId", extending.id);
@@ -693,11 +545,7 @@ export default function Artboard({
     }
 
     try {
-      const response = await fetch("/api/checkout", {
-        method: "POST",
-        body: formData,
-      });
-
+      const response = await fetch("/api/checkout", { method: "POST", body: formData });
       const data = (await response.json()) as { checkoutUrl?: string; error?: string };
 
       if (!response.ok || !data.checkoutUrl) {
@@ -711,6 +559,8 @@ export default function Artboard({
     }
   };
 
+  const quickAdds = [100_00, 500_00];
+
   return (
     <div className={`relative h-full w-full overflow-hidden bg-black ${className}`}>
       {/* Main T-Shirt Mockup Area */}
@@ -721,14 +571,12 @@ export default function Artboard({
       >
         <TShirtPreview
           placements={snapshot.placements}
-          occupied={placedRects}
-          sel={sel}
+          layout={layout}
+          preview={extending ? null : previewRect}
           creative={creative}
           creativeFit={creativeFit}
           viewport={viewport}
-          interactive={buyOpen && !snapshot.auctionClosed}
-          mustContain={extending}
-          onSelChange={handleSelChange}
+          buyMode={buyOpen && !snapshot.auctionClosed}
           onPlacementActivate={(placement) => {
             if (extending?.id === placement.id) return;
             setExtendPrompt(placement);
@@ -749,7 +597,7 @@ export default function Artboard({
             <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
               {extendPrompt.isDemo
                 ? "Demo logos cannot be extended. Pick a free spot for a new purchase."
-                : "Grow this logo and pay only for the new pixels. Use the same email from the original purchase."}
+                : "Add pixels to this logo and pay only for what you add. The bigger it gets, the closer to the center it moves."}
             </p>
             <div className="mt-5 flex flex-col gap-2">
               {!extendPrompt.isDemo && (
@@ -782,7 +630,9 @@ export default function Artboard({
         {/* Drawer Header */}
         <div className="sticky top-0 z-10 flex items-start justify-between border-b border-border/40 bg-card/95 p-4 backdrop-blur">
           <div>
-            <p className="font-display text-lg tracking-wide">BUY SPACE ON THE SHIRT</p>
+            <p className="font-display text-lg tracking-wide">
+              {extending ? "ADD MORE SPACE" : "BUY SPACE ON THE SHIRT"}
+            </p>
             <p className="mt-0.5 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
               {formatPixelPrice(snapshot.stats.currentPriceCents)} / pixel ·{" "}
               {formatPixelPrice(MIN_PRINTED_PIXELS * snapshot.stats.currentPriceCents)} minimum
@@ -800,39 +650,59 @@ export default function Artboard({
 
         {/* Form Body */}
         <div className="space-y-5 p-4">
-          {/* Creative Upload */}
-          <div>
-            <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-              Upload Logo / Creative
-            </label>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) handleCreativeUpload(file);
-              }}
-            />
-            {creative ? (
-              <div className="flex items-center gap-3 rounded border border-border bg-black/40 p-3">
-                <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded border border-border bg-black">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={creative}
-                    alt="Creative preview"
-                    className={`h-full w-full ${creativeFit === "cover" ? "object-cover" : "object-contain"}`}
-                  />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-foreground">
-                    {creativeFile?.name}
-                  </p>
-                  <p className="font-condensed text-[11px] text-muted-foreground">
-                    Ratio: {creativeAspect.toFixed(2)} : 1
-                  </p>
-                  {!extending && (
+          {extending ? (
+            <div className="flex items-start justify-between gap-3 border border-[var(--accent-yellow)]/40 bg-[var(--accent-yellow)]/10 p-3">
+              <div className="min-w-0">
+                <p className="font-condensed text-[10px] uppercase tracking-widest text-[var(--accent-yellow)]">
+                  Extending
+                </p>
+                <p className="mt-1 truncate font-display text-lg leading-none tracking-wide text-white">
+                  {extending.brand}
+                </p>
+                <p className="mt-1 font-condensed text-xs text-muted-foreground">
+                  Now {usd(extending.bidCents)} · {extending.pixels.toLocaleString()} px
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={clearExtendMode}
+                className="shrink-0 font-condensed text-xs uppercase tracking-wider text-muted-foreground underline hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div>
+              <label className="mb-1.5 block font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+                Upload Logo / Creative
+              </label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleCreativeUpload(file);
+                }}
+              />
+              {creative ? (
+                <div className="flex items-center gap-3 rounded border border-border bg-black/40 p-3">
+                  <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded border border-border bg-black">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={creative}
+                      alt="Creative preview"
+                      className={`h-full w-full ${creativeFit === "cover" ? "object-cover" : "object-contain"}`}
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-foreground">
+                      {creativeFile?.name}
+                    </p>
+                    <p className="font-condensed text-[11px] text-muted-foreground">
+                      Ratio: {creativeAspect.toFixed(2)} : 1
+                    </p>
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
@@ -840,22 +710,22 @@ export default function Artboard({
                     >
                       Change file
                     </button>
-                  )}
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex h-[270px] w-full flex-col items-center justify-center gap-2 rounded border border-dashed border-border bg-secondary/30 p-5 text-center transition-colors hover:border-foreground/40 hover:bg-secondary/50"
-              >
-                <Upload className="h-6 w-6 text-muted-foreground" />
-                <span className="font-condensed text-xs uppercase tracking-wider text-muted-foreground">
-                  Click to upload logo (PNG, JPG, WebP)
-                </span>
-              </button>
-            )}
-          </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex h-[270px] w-full flex-col items-center justify-center gap-2 rounded border border-dashed border-border bg-secondary/30 p-5 text-center transition-colors hover:border-foreground/40 hover:bg-secondary/50"
+                >
+                  <Upload className="h-6 w-6 text-muted-foreground" />
+                  <span className="font-condensed text-xs uppercase tracking-wider text-muted-foreground">
+                    Click to upload logo (PNG, JPG, WebP)
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Brand Name */}
           <div>
@@ -907,131 +777,113 @@ export default function Artboard({
             )}
           </div>
 
-          {extending && (
-            <div className="flex items-start justify-between gap-3 border border-[var(--accent-yellow)]/40 bg-[var(--accent-yellow)]/10 p-3">
-              <div>
-                <p className="font-condensed text-[10px] uppercase tracking-widest text-[var(--accent-yellow)]">
-                  Extending
-                </p>
-                <p className="mt-1 font-display text-lg leading-none tracking-wide text-white">
-                  {extending.brand}
-                </p>
-                <p className="mt-1 font-condensed text-xs text-muted-foreground">
-                  Drag corners to grow. Pay only for new pixels.
-                </p>
+          {/* Leaderboard target */}
+          {topBidder && !isTopBidder && (
+            <div className="border border-[var(--accent-yellow)]/35 bg-[var(--accent-yellow)]/8 p-3">
+              <div className="flex items-center">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center border border-[var(--accent-yellow)]/50 text-[var(--accent-yellow)]">
+                  <Trophy className="h-5 w-5" />
+                </div>
+                <div className="ml-3 min-w-0 flex-1">
+                  <p className="font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
+                    Current #1
+                  </p>
+                  <p className="mt-1 truncate font-display text-lg leading-none tracking-wide text-white">
+                    {topBidder.brand}
+                  </p>
+                </div>
+                <div className="ml-3 shrink-0 text-right">
+                  <p className="font-display text-xl leading-none text-white">
+                    {usd(topBidder.bidCents)}
+                  </p>
+                  <p className="mt-1 font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {topBidder.pixels.toLocaleString()} px
+                  </p>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={clearExtendMode}
-                className="shrink-0 font-condensed text-xs uppercase tracking-wider text-muted-foreground underline hover:text-white"
-              >
-                Cancel
-              </button>
+
+              {takeTopCents ? (
+                <button
+                  type="button"
+                  onClick={() => setAmountCents(takeTopCents)}
+                  className="mt-3 h-10 w-full bg-[var(--accent-yellow)] px-3 font-display text-sm tracking-wide text-black transition hover:bg-white"
+                >
+                  TAKE #1 · {extending ? "+" : ""}
+                  {usd(takeTopCents)}
+                </button>
+              ) : (
+                <p className="mt-3 border-t border-white/10 pt-2 font-condensed text-xs text-muted-foreground">
+                  More space must unlock before anyone can take #1.
+                </p>
+              )}
             </div>
           )}
 
-          {/* Bid amount and live leaderboard target */}
+          {isTopBidder && (
+            <p className="border border-emerald-400/40 bg-emerald-400/10 p-3 text-center font-display text-sm tracking-wide text-emerald-300">
+              YOU TAKE #1 AND THE CENTER
+            </p>
+          )}
+
+          {/* Amount */}
           <div>
-            <div className="mb-2 flex items-center justify-between">
-              <label
-                htmlFor="bid-amount"
-                className="font-condensed text-xs uppercase tracking-widest text-muted-foreground"
-              >
-                {extending ? "Add to bid" : "Your Bid"}
-              </label>
+            <label
+              htmlFor="bid-amount"
+              className="mb-2 block font-condensed text-xs uppercase tracking-widest text-muted-foreground"
+            >
+              {extending ? "Add to your bid" : "Your bid"}
+            </label>
+            <div className="relative">
+              <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-display text-xl text-muted-foreground">
+                $
+              </span>
+              <input
+                id="bid-amount"
+                type="text"
+                inputMode="numeric"
+                aria-label={extending ? "Amount to add in USD" : "Your bid in USD"}
+                value={amount}
+                onFocus={() => setBidFocused(true)}
+                onChange={(e) => setAmount(e.target.value)}
+                onBlur={() => setBidFocused(false)}
+                className="h-14 w-full rounded border-2 border-[var(--accent-yellow)]/55 bg-background pl-10 pr-4 font-display text-2xl tracking-wide text-white focus:border-[var(--accent-yellow)] focus:outline-none"
+              />
             </div>
 
-            {!extending && topBidder ? (
-              <div
-                className={`mb-3 border p-3 ${
-                  takesTopSpot
-                    ? "border-emerald-400/40 bg-emerald-400/10"
-                    : "border-[var(--accent-yellow)]/35 bg-[var(--accent-yellow)]/8"
-                }`}
-              >
-                <div className="flex items-center">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center border border-[var(--accent-yellow)]/50 text-[var(--accent-yellow)]">
-                    <Trophy className="h-5 w-5" />
-                  </div>
-                  <div className="ml-3 min-w-0 flex-1">
-                    <p className="font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
-                      Current #1
-                    </p>
-                    <p className="mt-1 truncate font-display text-lg leading-none tracking-wide text-white">
-                      {topBidder.brand}
-                    </p>
-                  </div>
-                  <div className="ml-3 shrink-0 text-right">
-                    <p className="font-display text-xl leading-none text-white">
-                      {usd(topBidder.bidCents)}
-                    </p>
-                    <p className="mt-1 font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
-                      {topBidder.pixels.toLocaleString()} px
-                    </p>
-                  </div>
-                </div>
-
-                {takesTopSpot ? (
-                  <p className="mt-3 border-t border-emerald-400/20 pt-2 font-condensed text-sm font-semibold text-emerald-300">
-                    YOU&apos;RE #1 BY {usd(totalCents - topBidder.bidCents)}
-                  </p>
-                ) : topBidTarget ? (
+            {extending && (
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {quickAdds.map((cents) => (
                   <button
+                    key={cents}
                     type="button"
-                    onClick={beatTopBid}
-                    className="mt-3 h-10 w-full bg-[var(--accent-yellow)] px-3 font-display text-sm tracking-wide text-black transition hover:bg-white"
+                    onClick={() => setAmountCents(cents)}
+                    className="h-9 border border-border font-condensed text-xs uppercase tracking-wider text-foreground transition hover:border-foreground/50 hover:bg-secondary"
                   >
-                    TAKE #1 WITH {usd(topBidTarget.cents)}
+                    +{usd(cents)}
                   </button>
-                ) : (
-                  <p className="mt-3 border-t border-white/10 pt-2 font-condensed text-xs text-muted-foreground">
-                    More space must unlock before a new logo can take #1.
-                  </p>
-                )}
-              </div>
-            ) : !extending ? (
-              <button
-                type="button"
-                onClick={beatTopBid}
-                className="mb-4 h-11 w-full rounded bg-[var(--accent-yellow)] px-3 font-display text-sm tracking-wide text-black transition hover:bg-white"
-              >
-                BE THE FIRST TOP BIDDER · {usd(minimumPurchaseCents)}
-              </button>
-            ) : null}
-
-            {extending ? (
-              <div className="border-2 border-[var(--accent-yellow)]/55 bg-background px-4 py-3">
-                <p className="font-display text-2xl tracking-wide text-white">
-                  {usd(chargeCents)}
-                </p>
-                <p className="mt-1 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
-                  +{addedPixels.toLocaleString()} px · new total {usd(totalCents)}
-                </p>
-              </div>
-            ) : (
-              <div className="relative">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-display text-xl text-muted-foreground">
-                  $
-                </span>
-                <input
-                  id="bid-amount"
-                  type="text"
-                  inputMode="numeric"
-                  aria-label="Your bid in USD"
-                  value={amount}
-                  onFocus={() => setBidFocused(true)}
-                  onChange={(e) => syncFromAmount(e.target.value)}
-                  onBlur={() => setBidFocused(false)}
-                  className="h-14 w-full rounded border-2 border-[var(--accent-yellow)]/55 bg-background pl-10 pr-4 font-display text-2xl tracking-wide text-white focus:border-[var(--accent-yellow)] focus:outline-none"
-                />
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setAmountCents(extending.bidCents)}
+                  className="h-9 border border-border font-condensed text-xs uppercase tracking-wider text-foreground transition hover:border-foreground/50 hover:bg-secondary"
+                >
+                  Double
+                </button>
               </div>
             )}
+
+            <p className="mt-2 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
+              {extending
+                ? `+${(quote.addedCells * CELL_PX * CELL_PX).toLocaleString()} px · new total ${usd(quote.totalCents)} · ${(quote.cells * CELL_PX * CELL_PX).toLocaleString()} px`
+                : `${(quote.cells * CELL_PX * CELL_PX).toLocaleString()} px`}
+              {myRank ? ` · rank #${myRank}` : ""}
+            </p>
           </div>
 
-          {!sel && (
+          {!packed && (
             <div className="flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>No available spot at this bid.</span>
+              <span>The shirt cannot fit that much space yet. Try a smaller amount.</span>
             </div>
           )}
 
@@ -1070,10 +922,9 @@ export default function Artboard({
               : checkoutLoading
                 ? "RESERVING SPOT…"
                 : extending
-                  ? `ADD · ${usd(chargeCents)}`
-                  : `PURCHASE · ${usd(chargeCents)}`}
+                  ? `ADD · ${usd(quote.chargeCents)}`
+                  : `PURCHASE · ${usd(quote.chargeCents)}`}
           </button>
-
         </div>
       </aside>
     </div>

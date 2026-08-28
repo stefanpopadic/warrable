@@ -7,6 +7,7 @@ import {
   viewportForLevel,
   type Rect,
 } from "../src/lib/auction";
+import { packBoard, type LayoutItem } from "../src/lib/layout";
 
 type PlacementRow = {
   id: string;
@@ -16,6 +17,7 @@ type PlacementRow = {
   width_cells: number;
   height_cells: number;
   amount_cents: number;
+  sort_at: string;
   status: "paid" | "reserved";
 };
 
@@ -42,79 +44,21 @@ function asRect(row: PlacementRow): Rect {
   };
 }
 
-function edgeContact(rect: Rect, placed: Rect[]) {
-  let contact = 0;
-  for (const other of placed) {
-    const overlapX = Math.max(
-      0,
-      Math.min(rect.x + rect.w, other.x + other.w) - Math.max(rect.x, other.x),
-    );
-    const overlapY = Math.max(
-      0,
-      Math.min(rect.y + rect.h, other.y + other.h) - Math.max(rect.y, other.y),
-    );
-
-    if (rect.y + rect.h === other.y || other.y + other.h === rect.y) {
-      contact += overlapX;
-    }
-    if (rect.x + rect.w === other.x || other.x + other.w === rect.x) {
-      contact += overlapY;
-    }
-  }
-  return contact;
-}
-
-function stableVariation(id: string, max: number) {
-  let hash = 0;
-  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return max > 0 ? hash % max : 0;
-}
-
+/** Same packer the app runs at settle time, so the CLI can never drift from it. */
 function packByBid(rows: PlacementRow[], viewport: Rect): PackedPlacement[] {
-  const placed: PackedPlacement[] = [];
-  const centerX = viewport.x + viewport.w / 2;
-  const centerY = viewport.y + viewport.h / 2;
+  const items: LayoutItem[] = rows.map((row) => ({
+    id: row.id,
+    w: Number(row.width_cells),
+    h: Number(row.height_cells),
+    bidCents: Number(row.amount_cents),
+    tieBreak: new Date(row.sort_at).toISOString(),
+  }));
 
-  for (const row of rows) {
-    const w = Number(row.width_cells);
-    const h = Number(row.height_cells);
-    if (w > viewport.w || h > viewport.h) {
-      throw new Error(`${row.brand_name} is larger than the active viewport`);
-    }
+  const packed = packBoard(items, viewport);
+  if (!packed) throw new Error("No legal layout exists for the current board");
 
-    const candidates: Array<Rect & { score: number }> = [];
-    for (let y = viewport.y; y <= viewport.y + viewport.h - h; y++) {
-      for (let x = viewport.x; x <= viewport.x + viewport.w - w; x++) {
-        const rect = { x, y, w, h };
-        if (placed.some((other) => rectsOverlap(rect, other))) continue;
-
-        const contact = edgeContact(rect, placed);
-        if (placed.length > 0 && contact === 0) continue;
-
-        const distance = Math.hypot(
-          x + w / 2 - centerX,
-          (y + h / 2 - centerY) * 0.72,
-        );
-        candidates.push({
-          ...rect,
-          score: contact * 1.8 - distance * 1.35,
-        });
-      }
-    }
-
-    if (candidates.length === 0) {
-      throw new Error(`No legal in-bounds position remains for ${row.brand_name}`);
-    }
-
-    candidates.sort((a, b) => b.score - a.score);
-    const topChoices = Math.min(14, candidates.length);
-    const choice =
-      placed.length === 0 ? candidates[0] : candidates[stableVariation(row.id, topChoices)];
-
-    placed.push({ ...row, ...choice });
-  }
-
-  return placed;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return packed.map((item) => ({ ...byId.get(item.id)!, x: item.x, y: item.y, w: item.w, h: item.h }));
 }
 
 function findLayoutProblems(rows: PlacementRow[], viewport: Rect) {
@@ -146,6 +90,7 @@ async function main() {
       width_cells,
       height_cells,
       amount_cents,
+      COALESCE(paid_at, created_at) AS sort_at,
       status
     FROM placements
     WHERE status = 'paid'
@@ -160,6 +105,7 @@ async function main() {
       width_cells,
       height_cells,
       amount_cents,
+      created_at AS sort_at,
       status
     FROM placements
     WHERE status = 'reserved'
@@ -205,6 +151,7 @@ async function main() {
     width_cells: row.w,
     height_cells: row.h,
     amount_cents: row.amount_cents,
+    sort_at: row.sort_at,
     status: row.status,
   }));
   const packedProblems = findLayoutProblems(packedRows, viewport);

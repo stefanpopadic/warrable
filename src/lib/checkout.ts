@@ -3,7 +3,7 @@ import "server-only";
 import { createHmac } from "node:crypto";
 import { fileTypeFromBuffer } from "file-type";
 import { z } from "zod";
-import { isRectInViewport, viewportForLevel, type Rect } from "@/lib/auction";
+import type { Rect } from "@/lib/auction";
 
 const MAX_CREATIVE_BYTES = 4 * 1024 * 1024;
 const ACCEPTED_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -25,10 +25,10 @@ const checkoutFields = z.object({
   website: z.string().trim().min(1, "Add a website."),
   email: emailSchema,
   creativeFit: z.enum(["contain", "cover"]),
-  x: z.coerce.number().int(),
-  y: z.coerce.number().int(),
-  w: z.coerce.number().int().min(1),
-  h: z.coerce.number().int().min(1),
+  // Buyers choose an amount, never a position. The server sizes the rect from
+  // the cell count and the creative's aspect, then the packer places it.
+  cells: z.coerce.number().int().min(1, "Choose how much space to buy."),
+  aspect: z.coerce.number().min(0.2).max(5).default(1),
   termsAccepted: z.literal("true"),
   extendPlacementId: z.string().trim().uuid().optional(),
 });
@@ -52,40 +52,33 @@ function normalizeWebsite(value: string) {
   return normalized;
 }
 
-export async function parseCheckoutFormData(
-  formData: FormData,
-  viewport: Rect = viewportForLevel(0),
-) {
+export async function parseCheckoutFormData(formData: FormData, viewport: Rect) {
   const extendRaw = formData.get("extendPlacementId");
   const parsed = checkoutFields.parse({
     brand: formData.get("brand"),
     website: formData.get("website"),
     email: formData.get("email"),
     creativeFit: formData.get("creativeFit") ?? "contain",
-    x: formData.get("x"),
-    y: formData.get("y"),
-    w: formData.get("w"),
-    h: formData.get("h"),
+    cells: formData.get("cells"),
+    aspect: formData.get("aspect") ?? 1,
     termsAccepted: formData.get("termsAccepted"),
     extendPlacementId:
       typeof extendRaw === "string" && extendRaw.trim() ? extendRaw.trim() : undefined,
   });
-  const rect: Rect = { x: parsed.x, y: parsed.y, w: parsed.w, h: parsed.h };
 
-  if (!isRectInViewport(rect, viewport)) {
-    throw new Error("The selected area is outside the artboard.");
+  if (parsed.cells > viewport.w * viewport.h) {
+    throw new Error("That is more space than the shirt has unlocked.");
   }
 
-  const isExtend = Boolean(parsed.extendPlacementId);
-
-  if (isExtend) {
+  if (parsed.extendPlacementId) {
     return {
       brandName: parsed.brand,
       websiteUrl: normalizeWebsite(parsed.website),
       email: parsed.email,
       creativeFit: parsed.creativeFit,
-      rect,
-      extendPlacementId: parsed.extendPlacementId!,
+      cells: parsed.cells,
+      aspect: parsed.aspect,
+      extendPlacementId: parsed.extendPlacementId,
       creative: null as Blob | null,
       mimeType: null as string | null,
       extension: null as string | null,
@@ -111,7 +104,8 @@ export async function parseCheckoutFormData(
     websiteUrl: normalizeWebsite(parsed.website),
     email: parsed.email,
     creativeFit: parsed.creativeFit,
-    rect,
+    cells: parsed.cells,
+    aspect: parsed.aspect,
     extendPlacementId: undefined as string | undefined,
     creative: new Blob([bytes], { type: detected.mime }),
     mimeType: detected.mime,

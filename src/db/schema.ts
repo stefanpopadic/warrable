@@ -83,10 +83,12 @@ export const placementExtensions = pgTable(
       .notNull()
       .references(() => placements.id),
     email: text("email").notNull(),
-    x: integer("x").notNull(),
-    y: integer("y").notNull(),
-    widthCells: integer("width_cells").notNull(),
-    heightCells: integer("height_cells").notNull(),
+    /** Cells the buyer is adding. Geometry is resolved by the packer at settle time. */
+    addedCells: integer("added_cells").notNull(),
+    x: integer("x"),
+    y: integer("y"),
+    widthCells: integer("width_cells"),
+    heightCells: integer("height_cells"),
     amountCents: integer("amount_cents").notNull(),
     newAmountCents: integer("new_amount_cents").notNull(),
     status: placementExtensionStatus("status").notNull().default("reserved"),

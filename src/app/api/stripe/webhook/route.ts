@@ -8,6 +8,7 @@ import {
   markExtensionEnded,
   markPlacementPaid,
   markPaymentReview,
+  repackBoard,
 } from "@/db/placements";
 import { getStripe } from "@/lib/stripe";
 
@@ -145,6 +146,18 @@ async function processCheckoutCompleted(event: Stripe.Event, session: Stripe.Che
       return;
     }
     throw error;
+  }
+
+  // The sale is already recorded, so sorting the board by bid is best effort. A
+  // failure here leaves a valid board that `npm run placements:repack` can fix.
+  try {
+    const sorted = await repackBoard();
+    if (!sorted) console.error("Board repack skipped after payment", { placementId });
+  } catch (error) {
+    console.error("Board repack failed after payment", {
+      placementId,
+      message: error instanceof Error ? error.message : "unknown_error",
+    });
   }
 }
 

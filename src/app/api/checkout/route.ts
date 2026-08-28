@@ -7,6 +7,7 @@ import {
   attachExtensionCheckoutSession,
   createPlacementExtension,
   getCurrentViewport,
+  planNewPlacement,
   releaseExtension,
   releasePlacement,
   reservePlacement,
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
       const extension = await createPlacementExtension({
         placementId: input.extendPlacementId,
         email: input.email,
-        rect: input.rect,
+        addedCells: input.cells,
         requesterHash,
       });
       extensionId = extension.id;
@@ -72,12 +73,9 @@ export async function POST(request: Request) {
           placement_id: extension.placementId,
           amount_cents: String(extension.amountCents),
           new_amount_cents: String(extension.newAmountCents),
-          pixel_count: String(extension.pixelCount),
+          added_cells: String(extension.addedCells),
+          pixel_count: String(extension.newPixels),
           brand_name: extension.brandName,
-          x: String(input.rect.x),
-          y: String(input.rect.y),
-          w: String(input.rect.w),
-          h: String(input.rect.h),
         },
         success_url: `${successReturnUrl.toString()}&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${baseUrl}/checkout/cancel?extension_id=${extension.id}`,
@@ -92,11 +90,12 @@ export async function POST(request: Request) {
       return Response.json({ checkoutUrl: session.url }, { status: 201 });
     }
 
+    const plan = await planNewPlacement({ cells: input.cells, aspect: input.aspect });
     const reservation = await reservePlacement({
       brandName: input.brandName,
       websiteUrl: input.websiteUrl,
       creativeFit: input.creativeFit,
-      rect: input.rect,
+      rect: plan.rect,
       requesterHash,
       email: input.email,
     });
@@ -197,13 +196,13 @@ export async function POST(request: Request) {
       message.includes("valid PNG") ||
       message.includes("Website") ||
       message.includes("Invalid URL") ||
-      message.includes("outside the artboard") ||
+      message.includes("more space than the shirt") ||
+      message.includes("how much space") ||
       message.includes("Enter a valid email") ||
       message.includes("email_required") ||
       message.includes("email_mismatch") ||
       message.includes("email_not_on_file") ||
       message.includes("demo_not_extendable") ||
-      message.includes("must_contain_original") ||
       message.includes("must_grow") ||
       message.includes("placement_not_found")
     ) {
@@ -216,8 +215,8 @@ export async function POST(request: Request) {
       if (message.includes("demo_not_extendable")) {
         return apiError("Demo logos cannot be extended.", 400);
       }
-      if (message.includes("must_contain_original") || message.includes("must_grow")) {
-        return apiError("Expand your existing space — it must grow and still cover the original.", 400);
+      if (message.includes("must_grow")) {
+        return apiError("Add more space than you already own.", 400);
       }
       if (message.includes("email_required") || message.includes("Enter a valid email")) {
         return apiError("Enter a valid email.", 400);
@@ -229,8 +228,14 @@ export async function POST(request: Request) {
         400,
       );
     }
+    if (message.includes("not_enough_space")) {
+      return apiError(
+        "The shirt does not have room for that much space yet. Try a smaller amount.",
+        409,
+      );
+    }
     if (message.includes("placement_overlap")) {
-      return apiError("That space was just reserved. Choose another position.", 409);
+      return apiError("That space was just taken. Try again.", 409);
     }
     if (message.includes("outside_viewport")) {
       return apiError(

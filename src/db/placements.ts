@@ -4,15 +4,20 @@ import { getSql } from "@/db";
 import {
   AUCTION_END,
   amountCentsForPixels,
+  CELL_PX,
   getMilestoneState,
   getPricingTier,
-  printedPixels,
-  rectContains,
-  rectsOverlap,
   RESERVATION_MINUTES,
   viewportForRaised,
   type Rect,
 } from "@/lib/auction";
+import {
+  bestDimensions,
+  findFreeRect,
+  packBoard,
+  type LayoutItem,
+  type PlacedItem,
+} from "@/lib/layout";
 import { faviconUrlForWebsite } from "@/lib/artboard";
 import type { ArtboardSnapshot } from "@/lib/artboard-data";
 import { isPlacementId } from "@/lib/checkout";
@@ -76,6 +81,46 @@ export async function getCurrentViewport() {
   return viewportForRaised(await getRaisedCents());
 }
 
+/**
+ * Size a fresh buy and find it a holding rect. Nobody picks coordinates: this is
+ * only somewhere legal to park the reservation until the payment settles and the
+ * packer sorts the whole board by bid.
+ */
+export async function planNewPlacement(input: { cells: number; aspect: number }) {
+  const state = await loadBoardState();
+  const paidCells = state.paid.reduce((total, row) => total + row.w * row.h, 0);
+  const reservedCells = state.reserved.reduce((total, rect) => total + rect.w * rect.h, 0);
+  const freeCells =
+    state.viewport.w * state.viewport.h - paidCells - reservedCells - state.pendingCells;
+
+  const dims = bestDimensions(input.cells, input.aspect, state.viewport);
+  if (dims.w * dims.h > freeCells) throw new Error("not_enough_space");
+
+  const rect = findFreeRect(dims.w, dims.h, [
+    ...state.paid.map((row) => row.rect),
+    ...state.reserved,
+  ], state.viewport);
+  if (!rect) throw new Error("not_enough_space");
+
+  // The board must still lay out once this becomes paid, or the buyer would pay
+  // for space that cannot be arranged.
+  const amountCents = amountCentsForPixels(
+    dims.w * dims.h * CELL_PX * CELL_PX,
+    state.pixelsSold,
+  );
+  const feasible = packBoard(
+    [
+      ...state.paid.map(({ id, w, h, bidCents, tieBreak }) => ({ id, w, h, bidCents, tieBreak })),
+      { id: "pending", w: dims.w, h: dims.h, bidCents: amountCents, tieBreak: "9999" },
+    ],
+    state.viewport,
+    { blocked: state.reserved },
+  );
+  if (!feasible) throw new Error("not_enough_space");
+
+  return { rect, amountCents };
+}
+
 export async function reservePlacement(input: {
   brandName: string;
   websiteUrl: string;
@@ -127,10 +172,152 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+/** Advisory lock so two settling payments never repack the board at once. */
+const BOARD_LOCK_KEY = 918_273_645;
+
+export type BoardState = {
+  paid: Array<LayoutItem & { pixelCount: number; rect: Rect }>;
+  reserved: Rect[];
+  /** Cells promised to pending extensions, which hold no rect of their own. */
+  pendingCells: number;
+  raisedCents: number;
+  pixelsSold: number;
+  viewport: Rect;
+};
+
+/** Everything the packer needs to lay out the live board. */
+async function loadBoardState(): Promise<BoardState> {
+  const sql = getSql();
+  const [paidRows, reservedRows, pendingRows] = await Promise.all([
+    sql`
+      SELECT
+        id,
+        x,
+        y,
+        width_cells,
+        height_cells,
+        amount_cents,
+        pixel_count,
+        COALESCE(paid_at, created_at) AS sort_at
+      FROM placements
+      WHERE status = 'paid'
+    `,
+    sql`
+      SELECT x, y, width_cells, height_cells
+      FROM placements
+      WHERE status = 'reserved'
+        AND reservation_expires_at > now()
+    `,
+    sql`
+      SELECT COALESCE(SUM(added_cells), 0) AS cells
+      FROM placement_extensions
+      WHERE status = 'reserved'
+        AND expires_at > now()
+    `,
+  ]);
+
+  const paid = asRows<{
+    id: string;
+    x: number;
+    y: number;
+    width_cells: number;
+    height_cells: number;
+    amount_cents: number;
+    pixel_count: number;
+    sort_at: string;
+  }>(paidRows).map((row) => ({
+    id: row.id,
+    w: Number(row.width_cells),
+    h: Number(row.height_cells),
+    bidCents: Number(row.amount_cents),
+    pixelCount: Number(row.pixel_count),
+    tieBreak: new Date(row.sort_at).toISOString(),
+    rect: {
+      x: Number(row.x),
+      y: Number(row.y),
+      w: Number(row.width_cells),
+      h: Number(row.height_cells),
+    },
+  }));
+
+  const raisedCents = paid.reduce((total, row) => total + row.bidCents, 0);
+  const pixelsSold = paid.reduce((total, row) => total + row.pixelCount, 0);
+
+  return {
+    paid,
+    reserved: asRows<ReservedRow>(reservedRows).map((row) => ({
+      x: Number(row.x),
+      y: Number(row.y),
+      w: Number(row.width_cells),
+      h: Number(row.height_cells),
+    })),
+    pendingCells: Number(asRows<{ cells: number }>(pendingRows)[0]?.cells ?? 0),
+    raisedCents,
+    pixelsSold,
+    viewport: viewportForRaised(raisedCents),
+  };
+}
+
+export type ExtensionPlan = {
+  placementId: string;
+  oldCells: number;
+  newWidth: number;
+  newHeight: number;
+  addedCells: number;
+  deltaCents: number;
+  newAmountCents: number;
+  packed: PlacedItem[];
+};
+
+/**
+ * Work out the grown size, its delta price, and the resulting board layout.
+ * Returns null when the board cannot hold the growth.
+ */
+function planExtension(
+  state: BoardState,
+  placementId: string,
+  paidAmountCents: number,
+  requestedCells: number,
+): ExtensionPlan | null {
+  const current = state.paid.find((row) => row.id === placementId);
+  if (!current) return null;
+
+  const oldCells = current.w * current.h;
+  const aspect = current.w / current.h;
+  const dims = bestDimensions(oldCells + Math.max(1, requestedCells), aspect, state.viewport);
+  const addedCells = dims.w * dims.h - oldCells;
+  if (addedCells < 1) return null;
+
+  // Added pixels are priced at today's tier and stacked on what was already paid,
+  // so the total can only ever go up.
+  const deltaCents = amountCentsForPixels(addedCells * CELL_PX * CELL_PX, state.pixelsSold);
+  const newAmountCents = paidAmountCents + deltaCents;
+
+  const items = state.paid.map((row) =>
+    row.id === placementId
+      ? { id: row.id, w: dims.w, h: dims.h, bidCents: newAmountCents, tieBreak: row.tieBreak }
+      : { id: row.id, w: row.w, h: row.h, bidCents: row.bidCents, tieBreak: row.tieBreak },
+  );
+
+  const packed = packBoard(items, state.viewport, { blocked: state.reserved });
+  if (!packed) return null;
+
+  return {
+    placementId,
+    oldCells,
+    newWidth: dims.w,
+    newHeight: dims.h,
+    addedCells,
+    deltaCents,
+    newAmountCents,
+    packed,
+  };
+}
+
 export async function createPlacementExtension(input: {
   placementId: string;
   email: string;
-  rect: Rect;
+  addedCells: number;
   requesterHash: string;
 }) {
   const sql = getSql();
@@ -179,84 +366,26 @@ export async function createPlacementExtension(input: {
     throw new Error("email_mismatch");
   }
 
-  const oldRect: Rect = {
-    x: Number(placement.x),
-    y: Number(placement.y),
-    w: Number(placement.width_cells),
-    h: Number(placement.height_cells),
-  };
-  if (!rectContains(input.rect, oldRect)) {
-    throw new Error("must_contain_original");
-  }
-  if (
-    input.rect.x === oldRect.x &&
-    input.rect.y === oldRect.y &&
-    input.rect.w === oldRect.w &&
-    input.rect.h === oldRect.h
-  ) {
-    throw new Error("must_grow");
+  const requestedCells = Math.max(1, Math.round(input.addedCells));
+  const state = await loadBoardState();
+
+  const freeCells =
+    state.viewport.w * state.viewport.h -
+    state.paid.reduce((total, row) => total + row.w * row.h, 0) -
+    state.reserved.reduce((total, rect) => total + rect.w * rect.h, 0) -
+    state.pendingCells;
+
+  if (requestedCells > freeCells) {
+    throw new Error("not_enough_space");
   }
 
-  const viewport = await getCurrentViewport();
-  if (
-    input.rect.x < viewport.x ||
-    input.rect.y < viewport.y ||
-    input.rect.x + input.rect.w > viewport.x + viewport.w ||
-    input.rect.y + input.rect.h > viewport.y + viewport.h
-  ) {
-    throw new Error("outside_viewport");
-  }
-
-  const blockers = asRows<{
-    id: string;
-    x: number;
-    y: number;
-    width_cells: number;
-    height_cells: number;
-  }>(await sql`
-    SELECT id, x, y, width_cells, height_cells
-    FROM placements
-    WHERE status IN ('paid', 'reserved')
-      AND id <> ${input.placementId}::uuid
-      AND (
-        status = 'paid'
-        OR reservation_expires_at > now()
-      )
-    UNION ALL
-    SELECT placement_id AS id, x, y, width_cells, height_cells
-    FROM placement_extensions
-    WHERE status = 'reserved'
-      AND expires_at > now()
-      AND placement_id <> ${input.placementId}::uuid
-  `);
-
-  for (const blocker of blockers) {
-    if (
-      rectsOverlap(input.rect, {
-        x: Number(blocker.x),
-        y: Number(blocker.y),
-        w: Number(blocker.width_cells),
-        h: Number(blocker.height_cells),
-      })
-    ) {
-      throw new Error("placement_overlap");
-    }
-  }
-
-  const oldPixels = Number(placement.pixel_count);
-  const paidPixelsRows = asRows<{ pixels: string | number }>(await sql`
-    SELECT COALESCE(SUM(pixel_count), 0)::bigint AS pixels
-    FROM placements
-    WHERE status = 'paid'
-  `);
-  const totalPaidPixels = Number(paidPixelsRows[0]?.pixels ?? 0);
-  const pixelsSoldBefore = Math.max(0, totalPaidPixels - oldPixels);
-  const newAmountCents = amountCentsForPixels(printedPixels(input.rect), pixelsSoldBefore);
-  const paidAmountCents = Number(placement.amount_cents);
-  const deltaCents = newAmountCents - paidAmountCents;
-  if (deltaCents <= 0) {
-    throw new Error("must_grow");
-  }
+  const plan = planExtension(
+    state,
+    input.placementId,
+    Number(placement.amount_cents),
+    requestedCells,
+  );
+  if (!plan) throw new Error("not_enough_space");
 
   // Cancel any prior active extension for this placement, then insert.
   await sql`
@@ -270,15 +399,13 @@ export async function createPlacementExtension(input: {
     id: string;
     amount_cents: number;
     new_amount_cents: number;
+    added_cells: number;
     expires_at: string;
   }>(await sql`
     INSERT INTO placement_extensions (
       placement_id,
       email,
-      x,
-      y,
-      width_cells,
-      height_cells,
+      added_cells,
       amount_cents,
       new_amount_cents,
       requester_hash,
@@ -287,16 +414,13 @@ export async function createPlacementExtension(input: {
     VALUES (
       ${input.placementId}::uuid,
       ${email},
-      ${input.rect.x},
-      ${input.rect.y},
-      ${input.rect.w},
-      ${input.rect.h},
-      ${deltaCents},
-      ${newAmountCents},
+      ${plan.addedCells},
+      ${plan.deltaCents},
+      ${plan.newAmountCents},
       ${input.requesterHash},
       ${expiresAt.toISOString()}::timestamptz
     )
-    RETURNING id, amount_cents, new_amount_cents, expires_at
+    RETURNING id, amount_cents, new_amount_cents, added_cells, expires_at
   `);
 
   if (!rows[0]) throw new Error("extension_failed");
@@ -307,8 +431,9 @@ export async function createPlacementExtension(input: {
     brandName: placement.brand_name,
     amountCents: Number(rows[0].amount_cents),
     newAmountCents: Number(rows[0].new_amount_cents),
-    pixelCount: printedPixels(input.rect),
-    addedPixels: printedPixels(input.rect) - oldPixels,
+    addedCells: Number(rows[0].added_cells),
+    addedPixels: Number(rows[0].added_cells) * CELL_PX * CELL_PX,
+    newPixels: plan.newWidth * plan.newHeight * CELL_PX * CELL_PX,
     expiresAt: rows[0].expires_at,
   };
 }
@@ -349,24 +474,18 @@ export async function getExtensionForPayment(extensionId: string) {
     placement_id: string;
     amount_cents: number;
     new_amount_cents: number;
+    added_cells: number;
     status: string;
     checkout_session_id: string | null;
-    x: number;
-    y: number;
-    width_cells: number;
-    height_cells: number;
   }>(await sql`
     SELECT
       id,
       placement_id,
       amount_cents,
       new_amount_cents,
+      added_cells,
       status,
-      checkout_session_id,
-      x,
-      y,
-      width_cells,
-      height_cells
+      checkout_session_id
     FROM placement_extensions
     WHERE id = ${extensionId}::uuid
     LIMIT 1
@@ -374,6 +493,11 @@ export async function getExtensionForPayment(extensionId: string) {
   return rows[0] ?? null;
 }
 
+/**
+ * Grow the placement and re-lay the whole board in one transaction. The overlap
+ * constraint is immediate, so every paid row parks in `payment_review` while the
+ * coordinates move and only flips back once the new layout is fully written.
+ */
 export async function applyPaidExtension(input: {
   eventId: string;
   eventType: string;
@@ -388,50 +512,33 @@ export async function applyPaidExtension(input: {
   if (extension.status === "paid") return true;
   if (extension.status !== "reserved") throw new Error("extension_not_active");
 
-  const newRect: Rect = {
-    x: Number(extension.x),
-    y: Number(extension.y),
-    w: Number(extension.width_cells),
-    h: Number(extension.height_cells),
-  };
+  const state = await loadBoardState();
+  const current = state.paid.find((row) => row.id === extension.placement_id);
+  if (!current) throw new Error("placement_not_found");
 
-  const blockers = asRows<{
-    x: number;
-    y: number;
-    width_cells: number;
-    height_cells: number;
-  }>(await sql`
-    SELECT x, y, width_cells, height_cells
-    FROM placements
-    WHERE status IN ('paid', 'reserved')
-      AND id <> ${extension.placement_id}::uuid
-      AND (
-        status = 'paid'
-        OR reservation_expires_at > now()
-      )
-  `);
+  const plan = planExtension(
+    state,
+    extension.placement_id,
+    current.bidCents,
+    Number(extension.added_cells),
+  );
+  if (!plan) throw new Error("placement_overlap");
 
-  for (const blocker of blockers) {
-    if (
-      rectsOverlap(newRect, {
-        x: Number(blocker.x),
-        y: Number(blocker.y),
-        w: Number(blocker.width_cells),
-        h: Number(blocker.height_cells),
-      })
-    ) {
-      throw new Error("placement_overlap");
-    }
-  }
-
-  const rows = asRows<{ id: string }>(await sql`
-    WITH incoming_event AS (
+  const paidIds = state.paid.map((row) => row.id);
+  const results = await sql.transaction((tx) => [
+    tx`SELECT pg_advisory_xact_lock(${BOARD_LOCK_KEY})`,
+    tx`
       INSERT INTO payment_events (event_id, event_type)
       VALUES (${input.eventId}, ${input.eventType})
       ON CONFLICT DO NOTHING
-      RETURNING event_id
-    ),
-    paid_extension AS (
+    `,
+    tx`
+      UPDATE placements
+      SET status = 'payment_review'
+      WHERE id::text = ANY(${paidIds})
+        AND status = 'paid'
+    `,
+    tx`
       UPDATE placement_extensions
       SET
         status = 'paid',
@@ -440,24 +547,89 @@ export async function applyPaidExtension(input: {
         updated_at = now()
       WHERE id = ${input.extensionId}::uuid
         AND status = 'reserved'
-        AND EXISTS (SELECT 1 FROM incoming_event)
-      RETURNING placement_id, x, y, width_cells, height_cells, new_amount_cents
-    )
-    UPDATE placements p
-    SET
-      x = e.x,
-      y = e.y,
-      width_cells = e.width_cells,
-      height_cells = e.height_cells,
-      amount_cents = e.new_amount_cents,
-      customer_email = COALESCE(p.customer_email, ${input.customerEmail}),
-      updated_at = now()
-    FROM paid_extension e
-    WHERE p.id = e.placement_id
-    RETURNING p.id
-  `);
+      RETURNING id
+    `,
+    tx`
+      UPDATE placements
+      SET
+        width_cells = ${plan.newWidth},
+        height_cells = ${plan.newHeight},
+        amount_cents = ${plan.newAmountCents},
+        payment_id = COALESCE(payment_id, ${input.paymentId}),
+        customer_email = COALESCE(customer_email, ${input.customerEmail}),
+        updated_at = now()
+      WHERE id = ${extension.placement_id}::uuid
+        AND status = 'payment_review'
+    `,
+    ...plan.packed.map(
+      (row) => tx`
+        UPDATE placements
+        SET x = ${row.x}, y = ${row.y}
+        WHERE id = ${row.id}::uuid
+          AND status = 'payment_review'
+      `,
+    ),
+    tx`
+      UPDATE placements
+      SET status = 'paid'
+      WHERE id::text = ANY(${paidIds})
+        AND status = 'payment_review'
+    `,
+  ]);
 
-  return Boolean(rows[0]);
+  return asRows<{ id: string }>(results[3]).length > 0;
+}
+
+/**
+ * Re-lay every paid logo so the biggest bid owns the center. Best effort: a
+ * failure leaves a valid board that is merely out of order, never a lost sale.
+ */
+export async function repackBoard(attempts = 3): Promise<boolean> {
+  const sql = getSql();
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const state = await loadBoardState();
+    if (state.paid.length === 0) return true;
+
+    const packed = packBoard(
+      state.paid.map(({ id, w, h, bidCents, tieBreak }) => ({ id, w, h, bidCents, tieBreak })),
+      state.viewport,
+      { blocked: state.reserved },
+    );
+    if (!packed) return false;
+
+    const paidIds = state.paid.map((row) => row.id);
+    try {
+      await sql.transaction((tx) => [
+        tx`SELECT pg_advisory_xact_lock(${BOARD_LOCK_KEY})`,
+        tx`
+          UPDATE placements
+          SET status = 'payment_review'
+          WHERE id::text = ANY(${paidIds})
+            AND status = 'paid'
+        `,
+        ...packed.map(
+          (row) => tx`
+            UPDATE placements
+            SET x = ${row.x}, y = ${row.y}
+            WHERE id = ${row.id}::uuid
+              AND status = 'payment_review'
+          `,
+        ),
+        tx`
+          UPDATE placements
+          SET status = 'paid'
+          WHERE id::text = ANY(${paidIds})
+            AND status = 'payment_review'
+        `,
+      ]);
+      return true;
+    } catch {
+      // A concurrent sale invalidated the plan. Re-read and try again.
+    }
+  }
+
+  return false;
 }
 
 export async function markExtensionEnded(input: {
@@ -760,65 +932,69 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
         amount_cents,
         pixel_count,
         is_demo,
-        link_clicks
+        link_clicks,
+        COALESCE(paid_at, created_at) AS sort_at
       FROM placements
       WHERE status = 'paid'
-        AND creative_url IS NOT NULL
       ORDER BY amount_cents DESC, paid_at ASC, created_at ASC
     `,
     sql`
-      SELECT id, x, y, width_cells, height_cells
+      SELECT id, x, y, width_cells, height_cells, amount_cents, created_at
       FROM placements
       WHERE status = 'reserved'
         AND reservation_expires_at > now()
     `,
     sql`
-      SELECT id, placement_id, x, y, width_cells, height_cells
+      SELECT COALESCE(SUM(added_cells), 0) AS cells
       FROM placement_extensions
       WHERE status = 'reserved'
         AND expires_at > now()
     `,
   ]);
 
-  const paid = paidRows as PaidRow[];
-  const reserved = reservedRows as ReservedRow[];
-  const extensions = extensionRows as Array<{
-    id: string;
-    placement_id: string;
-    x: number;
-    y: number;
-    width_cells: number;
-    height_cells: number;
-  }>;
-  const placements = paid.map((row) => ({
-    id: row.id,
-    brand: row.brand_name,
-    url: row.website_url,
-    creative: row.creative_url!,
-    creativeFit: row.creative_fit,
-    x: Number(row.x),
-    y: Number(row.y),
-    w: Number(row.width_cells),
-    h: Number(row.height_cells),
-    bidCents: Number(row.amount_cents),
-    pixels: Number(row.pixel_count),
-    isDemo: row.is_demo,
-  }));
-  const raisedCents = placements.reduce((total, placement) => total + placement.bidCents, 0);
-  const pixelsSold = placements.reduce((total, placement) => total + placement.pixels, 0);
+  const paid = paidRows as Array<PaidRow & { sort_at: string }>;
+  const reserved = reservedRows as Array<
+    ReservedRow & { amount_cents: number; created_at: string }
+  >;
+  const reservedCells = Number(
+    (extensionRows as Array<{ cells: number }>)[0]?.cells ?? 0,
+  );
+
+  // Every paid row owns board space, but only rows with a creative can be drawn.
+  const placements = paid
+    .filter((row) => row.creative_url)
+    .map((row) => ({
+      id: row.id,
+      brand: row.brand_name,
+      url: row.website_url,
+      creative: row.creative_url!,
+      creativeFit: row.creative_fit,
+      x: Number(row.x),
+      y: Number(row.y),
+      w: Number(row.width_cells),
+      h: Number(row.height_cells),
+      bidCents: Number(row.amount_cents),
+      pixels: Number(row.pixel_count),
+      isDemo: row.is_demo,
+    }));
+  const linkClicksById = new Map(paid.map((row) => [row.id, Number(row.link_clicks ?? 0)]));
+  const raisedCents = paid.reduce((total, row) => total + Number(row.amount_cents), 0);
+  const pixelsSold = paid.reduce((total, row) => total + Number(row.pixel_count), 0);
   const pricing = getPricingTier(pixelsSold);
   const milestone = getMilestoneState(raisedCents);
 
   return {
     placements,
     occupied: [
-      ...placements.map((placement) => ({
-        id: placement.id,
-        x: placement.x,
-        y: placement.y,
-        w: placement.w,
-        h: placement.h,
+      ...paid.map((row) => ({
+        id: row.id,
+        x: Number(row.x),
+        y: Number(row.y),
+        w: Number(row.width_cells),
+        h: Number(row.height_cells),
         reserved: false,
+        bidCents: Number(row.amount_cents),
+        tieBreak: new Date(row.sort_at).toISOString(),
       })),
       ...reserved.map((row) => ({
         id: row.id,
@@ -827,15 +1003,8 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
         w: Number(row.width_cells),
         h: Number(row.height_cells),
         reserved: true,
-      })),
-      // Pending extensions reserve their larger target rect so others cannot buy into it.
-      ...extensions.map((row) => ({
-        id: row.id,
-        x: Number(row.x),
-        y: Number(row.y),
-        w: Number(row.width_cells),
-        h: Number(row.height_cells),
-        reserved: true,
+        bidCents: Number(row.amount_cents),
+        tieBreak: new Date(row.created_at).toISOString(),
       })),
     ],
     stats: {
@@ -845,6 +1014,7 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
       currentPriceCents: pricing.currentPriceCents,
       nextPriceCents: pricing.nextPriceCents,
       pixelsUntilNextTier: pricing.pixelsUntilNextTier,
+      reservedCells,
     },
     milestone,
     leaderboard: placements.map((placement, index) => ({
@@ -856,7 +1026,7 @@ export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {
       creative: placement.creative,
       bidCents: placement.bidCents,
       pixels: placement.pixels,
-      linkClicks: Number(paid[index]?.link_clicks ?? 0),
+      linkClicks: Number(linkClicksById.get(placement.id) ?? 0),
     })),
     auctionClosed: Date.now() >= AUCTION_END,
     auctionEnd: new Date(AUCTION_END).toISOString(),

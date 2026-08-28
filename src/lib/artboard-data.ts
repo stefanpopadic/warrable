@@ -21,6 +21,10 @@ export type PublicPlacement = Rect & {
 export type OccupiedRect = Rect & {
   id: string;
   reserved: boolean;
+  /** Drives layout order. Reserved rows carry the amount they are reserving. */
+  bidCents: number;
+  /** Secondary layout sort for equal bids: paid_at, else created_at. */
+  tieBreak: string;
 };
 
 export type LeaderboardEntry = {
@@ -45,6 +49,8 @@ export type ArtboardSnapshot = {
     currentPriceCents: number;
     nextPriceCents: number | null;
     pixelsUntilNextTier: number;
+    /** Cells spoken for by pending extensions, which have no rect of their own. */
+    reservedCells: number;
   };
   milestone: MilestoneState;
   leaderboard: LeaderboardEntry[];
@@ -64,6 +70,7 @@ export function emptyArtboardSnapshot(): ArtboardSnapshot {
       currentPriceCents: pricePerPixelCents(0),
       nextPriceCents: nextPricePerPixelCents(0),
       pixelsUntilNextTier: pixelsUntilNextTier(0),
+      reservedCells: 0,
     },
     milestone,
     leaderboard: [],

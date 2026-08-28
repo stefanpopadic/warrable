@@ -22,9 +22,15 @@ export default function RulesPage() {
       <section>
         <LegalH2>The board</LegalH2>
         <LegalP>
-          The live artboard shows every confirmed placement. Once Stripe confirms payment, your logo is
-          locked into free space and cannot be displaced by a later buyer. Version one sells only free
-          space — no takeover auctions for occupied cells.
+          The live artboard shows every confirmed placement. Once Stripe confirms payment, the pixels you
+          bought are yours: nobody can take them, shrink them, or buy them out from under you. Version one
+          sells only free space — no takeover auctions for pixels somebody already owns.
+        </LegalP>
+        <LegalP>
+          The board arranges itself. Logos are laid out by amount paid, so the biggest buyer sits closest
+          to the center and everyone else clusters around it. That means your position on the shirt can
+          shift as other people buy, as buyers grow their logos, and as new milestones unlock more space.
+          Your pixel count is fixed; where those pixels sit is not.
         </LegalP>
       </section>
 
@@ -49,12 +55,20 @@ export default function RulesPage() {
         <LegalH2>How placement works</LegalH2>
         <LegalUl>
           <li>
-            Drag on the artboard to pick a rectangle, or leave placement blank and we will auto-place a
-            free block at purchase.
+            You choose an amount, not a position. Your spend sets how many pixels you get, and your logo
+            is sized to keep its own proportions.
           </li>
           <li>
-            Checkout reserves the selected space for about 30 minutes. If payment is not completed in
-            time, the reservation expires and the space returns to the pool.
+            The board is then packed by amount paid, largest first, so the leader holds the center. The
+            preview on the shirt shows exactly where you will land before you pay.
+          </li>
+          <li>
+            Already own a spot? Click your logo and add more pixels. You pay only for what you add, at
+            the current price per pixel, and the extra is added to your existing total.
+          </li>
+          <li>
+            Checkout reserves your space for about 30 minutes. If payment is not completed in time, the
+            reservation expires and the space returns to the pool.
           </li>
           <li>
             A completed payment is what claims the space. Your creative goes live only after payment is

@@ -449,7 +449,11 @@ const FRIENDLY_QUESTIONS: [string, string][] = [
   ],
   [
     "Can another buyer outbid my placement?",
-    "No. Version one sells only free space. Once Stripe confirms your payment, that placement is yours and cannot be displaced.",
+    "Nobody can take or shrink the pixels you paid for. The board does sort itself by amount paid, so the biggest buyer always holds the center and your position can shift as others buy or grow. Your pixel count never goes down.",
+  ],
+  [
+    "Can I add more pixels later?",
+    "Yes. Click your logo while the buy panel is open, enter how much you want to add, and pay only for the new pixels at the current price. Use the same email from your original purchase.",
   ],
   [
     "What artwork should I upload?",
