@@ -22,9 +22,14 @@ export type PlacedItem = LayoutItem & Rect;
 
 /** Vertical distance counts a little less, so clusters read as wide, not tall. */
 const Y_SQUASH = 0.72;
-const CONTACT_WEIGHT = 1.8;
+/**
+ * Contact is scored as a fraction of the item's own perimeter, not as a raw
+ * cell count. A wide banner has several times the perimeter of a small logo, so
+ * an unnormalized count let big items outscore the distance term entirely and
+ * drag the whole cluster off to whichever side already had mass.
+ */
+const CONTACT_WEIGHT = 20;
 const DISTANCE_WEIGHT = 1.35;
-const TOP_CHOICES = 14;
 
 /** Max log-ratio a rect may drift from the creative's natural aspect (~30%). */
 const MAX_ASPECT_DRIFT = 0.32;
@@ -37,12 +42,6 @@ export function sortLayoutItems<T extends Pick<LayoutItem, "bidCents" | "tieBrea
     if (a.tieBreak !== b.tieBreak) return a.tieBreak < b.tieBreak ? -1 : 1;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
-}
-
-function stableVariation(id: string, max: number) {
-  let hash = 0;
-  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return max > 0 ? hash % max : 0;
 }
 
 /**
@@ -186,20 +185,12 @@ export type PackOptions = {
 
 type Candidate = { lx: number; ly: number; score: number };
 
-function betterCandidate(a: Candidate, b: Candidate) {
+/** Ties resolve top-to-bottom then left-to-right, so packing is reproducible. */
+function betterCandidate(a: Candidate, b: Candidate | null) {
+  if (!b) return true;
   if (a.score !== b.score) return a.score > b.score;
   if (a.ly !== b.ly) return a.ly < b.ly;
   return a.lx < b.lx;
-}
-
-/** Keep only the best TOP_CHOICES slots, so a full scan never sorts thousands. */
-function insertTop(top: Candidate[], candidate: Candidate) {
-  if (top.length === TOP_CHOICES && !betterCandidate(candidate, top[top.length - 1])) return;
-
-  let i = top.length;
-  while (i > 0 && betterCandidate(candidate, top[i - 1])) i--;
-  top.splice(i, 0, candidate);
-  if (top.length > TOP_CHOICES) top.pop();
 }
 
 /**
@@ -226,9 +217,9 @@ export function packBoard(
     const { w, h } = item;
     if (w < 1 || h < 1 || w > viewport.w || h > viewport.h) return null;
 
-    let nearest: Candidate | null = null;
-    const top: Candidate[] = [];
-    let touchingCount = 0;
+    const perimeter = 2 * (w + h);
+    let touching: Candidate | null = null;
+    let detached: Candidate | null = null;
 
     for (let ly = 0; ly <= viewport.h - h; ly++) {
       for (let lx = 0; lx <= viewport.w - w; lx++) {
@@ -245,30 +236,26 @@ export function packBoard(
           occupancy.count(lx - 1, ly, 1, h) +
           occupancy.count(lx + w, ly, 1, h);
 
+        const candidate = {
+          lx,
+          ly,
+          score:
+            contact > 0
+              ? (contact / perimeter) * CONTACT_WEIGHT - distance * DISTANCE_WEIGHT
+              : -distance,
+        };
+
         if (contact > 0) {
-          touchingCount++;
-          insertTop(top, {
-            lx,
-            ly,
-            score: contact * CONTACT_WEIGHT - distance * DISTANCE_WEIGHT,
-          });
-        } else if (!nearest || -distance > nearest.score) {
-          nearest = { lx, ly, score: -distance };
+          if (betterCandidate(candidate, touching)) touching = candidate;
+        } else if (betterCandidate(candidate, detached)) {
+          detached = candidate;
         }
       }
     }
 
     // Free space can end up disconnected from the cluster, so a detached slot is
     // better than refusing the sale.
-    let choice: Candidate | null = null;
-    if (anchored && touchingCount > 0) {
-      choice = top[stableVariation(item.id, Math.min(TOP_CHOICES, touchingCount))] ?? top[0];
-    } else if (nearest) {
-      choice = nearest;
-    } else if (touchingCount > 0) {
-      choice = top[0];
-    }
-
+    const choice = anchored ? (touching ?? detached) : (detached ?? touching);
     if (!choice) return null;
 
     const rect: Rect = {

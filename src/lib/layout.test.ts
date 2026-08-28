@@ -139,6 +139,28 @@ describe("packBoard", () => {
     }
   });
 
+  it("centers the whole cluster, not just the leader", () => {
+    // Scoring contact as a raw cell count let wide items chase existing mass and
+    // drag the cluster to one side, leaving the leader centered inside a blob
+    // that was visibly off-center on the shirt.
+    const mixed: LayoutItem[] = [
+      item("wide", 19, 5, 475_000),
+      item("banner", 16, 4, 400_000),
+      item("box", 8, 6, 300_000),
+      ...Array.from({ length: 12 }, (_, i) => item(`s${i}`, 4 + (i % 3), 3, 90_000 - i * 1_000)),
+    ];
+    const packed = packBoard(mixed, viewportForLevel(2))!;
+    const view = viewportForLevel(2);
+
+    const left = Math.min(...packed.map((r) => r.x)) - view.x;
+    const right = view.x + view.w - Math.max(...packed.map((r) => r.x + r.w));
+    const top = Math.min(...packed.map((r) => r.y)) - view.y;
+    const bottom = view.y + view.h - Math.max(...packed.map((r) => r.y + r.h));
+
+    expect(Math.abs(left - right)).toBeLessThanOrEqual(4);
+    expect(Math.abs(top - bottom)).toBeLessThanOrEqual(4);
+  });
+
   it("never lands on a reserved rect", () => {
     const blocked: Rect[] = [{ x: viewport.x + 8, y: viewport.y + 12, w: 5, h: 5 }];
     const packed = packBoard(board, viewport, { blocked })!;
