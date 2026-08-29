@@ -32,7 +32,7 @@ async function postExtend(placementId: string, email: string, cells: number) {
   body.set("brand", "Verify Brand");
   body.set("website", "https://example.com");
   body.set("email", email);
-  body.set("creativeFit", "contain");
+  body.set("creativeFit", "cover");
   body.set("cells", String(cells));
   body.set("aspect", "1");
   body.set("termsAccepted", "true");

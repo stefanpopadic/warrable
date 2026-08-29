@@ -1,22 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Upload, X, AlertCircle, Trophy } from "lucide-react";
+import { Upload, X, AlertCircle, Minus, Plus } from "lucide-react";
 import {
   CELL_PX,
   formatPixelPrice,
   usd,
 } from "@/lib/artboard";
+import { MIN_PRINTED_PIXELS, type Rect } from "@/lib/auction";
 import {
-  MIN_PRINTED_PIXELS,
-  amountCentsForPixels,
-  pixelsForBudget,
-  type Rect,
-} from "@/lib/auction";
-import { bestDimensions, packBoard, sortLayoutItems, type LayoutItem } from "@/lib/layout";
+  DEFAULT_ASPECT,
+  clampAspect,
+  packBoard,
+  quotePurchase,
+  sortLayoutItems,
+  type LayoutItem,
+} from "@/lib/layout";
 import type { ArtboardSnapshot, PublicPlacement } from "@/lib/artboard-data";
 import { emptyArtboardSnapshot } from "@/lib/artboard-data";
 import { recordPlacementClick } from "@/lib/placement-clicks";
+import { trimCreativeFile } from "@/lib/trim-image";
 
 const EMPTY_SNAPSHOT = emptyArtboardSnapshot();
 const MIN_CELLS = MIN_PRINTED_PIXELS / (CELL_PX * CELL_PX);
@@ -81,7 +84,7 @@ function ArtboardGrid({
           <img
             src={b.creative}
             alt={`${b.brand} creative`}
-            className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain p-1.5"} bg-black/50`}
+            className={`h-full w-full ${b.creativeFit === "cover" ? "object-cover" : "object-contain"}`}
           />
         );
 
@@ -241,8 +244,10 @@ export default function Artboard({
   );
   const [creative, setCreative] = useState<string | null>(null);
   const [creativeFile, setCreativeFile] = useState<File | null>(null);
-  const [creativeAspect, setCreativeAspect] = useState<number>(1.0);
-  const [creativeFit] = useState<"contain" | "cover">("contain");
+  const [creativeAspect, setCreativeAspect] = useState<number>(DEFAULT_ASPECT);
+  // Cover fills the paid rect. Contain left empty bars on product shots that
+  // already have black padding baked into the file.
+  const [creativeFit] = useState<"contain" | "cover">("cover");
   const [brand, setBrand] = useState("");
   const [url, setUrl] = useState("");
   const [email, setEmail] = useState("");
@@ -255,6 +260,7 @@ export default function Artboard({
   const [extendPrompt, setExtendPrompt] = useState<PublicPlacement | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const creativeObjectUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (initialSnapshot) setSnapshot(initialSnapshot);
@@ -262,6 +268,8 @@ export default function Artboard({
 
   const viewport = snapshot.milestone.viewport;
   const pixelsSold = snapshot.stats.pixelsSold;
+  /** One minimum purchase, which is what the plus and minus buttons step by. */
+  const stepCents = MIN_PRINTED_PIXELS * snapshot.stats.currentPriceCents;
 
   // Every paid logo is a layout item; reservations are fixed obstacles.
   const paidItems = useMemo<LayoutItem[]>(
@@ -286,64 +294,50 @@ export default function Artboard({
     [snapshot.occupied],
   );
 
-  const freeCells = useMemo(() => {
-    const used =
+  const usedCells = useMemo(() => {
+    return (
       paidItems.reduce((total, item) => total + item.w * item.h, 0) +
       reservedRects.reduce((total, rect) => total + rect.w * rect.h, 0) +
-      snapshot.stats.reservedCells;
-    return Math.max(0, viewport.w * viewport.h - used);
-  }, [paidItems, reservedRects, snapshot.stats.reservedCells, viewport]);
+      snapshot.stats.reservedCells
+    );
+  }, [paidItems, reservedRects, snapshot.stats.reservedCells]);
 
+  const raisedCents = snapshot.stats.raisedCents;
   const budgetCents = useMemo(() => dollarsToCents(amount), [amount]);
 
   const extendingAspect = extending ? extending.w / extending.h : 1;
   const extendingCells = extending ? extending.w * extending.h : 0;
 
   /**
-   * Money in, shape out. A budget becomes cells, cells become a rectangle that
-   * keeps the logo's proportions, and that rectangle sets the real price.
+   * Money in, shape out. If the spend would unlock the next milestone, size
+   * against that larger board so the shirt zooms out instead of blocking.
    */
-  const quote = useMemo(() => {
-    if (extending) {
-      const requested = Math.max(
-        1,
-        Math.round(pixelsForBudget(budgetCents, pixelsSold) / (CELL_PX * CELL_PX)),
-      );
-      const capped = Math.min(requested, Math.max(1, freeCells));
-      const dims = bestDimensions(extendingCells + capped, extendingAspect, viewport);
-      const addedCells = Math.max(0, dims.w * dims.h - extendingCells);
-      const chargeCents = amountCentsForPixels(
-        addedCells * CELL_PX * CELL_PX,
+  const settle = useCallback(
+    (budget: number) =>
+      quotePurchase({
+        budgetCents: budget,
         pixelsSold,
-      );
-      return {
-        dims,
-        cells: dims.w * dims.h,
-        addedCells,
-        chargeCents,
-        totalCents: extending.bidCents + chargeCents,
-      };
-    }
+        raisedCents,
+        usedCells,
+        aspect: extending ? extendingAspect : creativeAspect,
+        minAddedCells: extending ? 1 : MIN_CELLS,
+        baseCells: extending ? extendingCells : 0,
+        baseBidCents: extending ? extending.bidCents : 0,
+      }),
+    [
+      creativeAspect,
+      extending,
+      extendingAspect,
+      extendingCells,
+      pixelsSold,
+      raisedCents,
+      usedCells,
+    ],
+  );
 
-    const requested = Math.max(
-      MIN_CELLS,
-      Math.round(pixelsForBudget(budgetCents, pixelsSold) / (CELL_PX * CELL_PX)),
-    );
-    const capped = Math.min(requested, Math.max(MIN_CELLS, freeCells));
-    const dims = bestDimensions(capped, creativeAspect, viewport);
-    const cells = dims.w * dims.h;
-    const chargeCents = amountCentsForPixels(cells * CELL_PX * CELL_PX, pixelsSold);
-    return { dims, cells, addedCells: cells, chargeCents, totalCents: chargeCents };
-  }, [
-    budgetCents,
-    creativeAspect,
-    extending,
-    extendingAspect,
-    extendingCells,
-    freeCells,
-    pixelsSold,
-    viewport,
-  ]);
+  const quote = useMemo(() => settle(budgetCents), [budgetCents, settle]);
+  const displayViewport = buyOpen ? quote.viewport : viewport;
+  const freeCells = Math.max(0, displayViewport.w * displayViewport.h - usedCells);
 
   const showPreview = buyOpen && !snapshot.auctionClosed && quote.addedCells > 0;
 
@@ -373,8 +367,8 @@ export default function Artboard({
   }, [extending, paidItems, quote, showPreview]);
 
   const packed = useMemo(
-    () => packBoard(previewItems, viewport, { blocked: reservedRects }),
-    [previewItems, reservedRects, viewport],
+    () => packBoard(previewItems, displayViewport, { blocked: reservedRects }),
+    [displayViewport, previewItems, reservedRects],
   );
 
   const layout = useMemo(() => {
@@ -405,55 +399,78 @@ export default function Artboard({
   const takeTopCents = useMemo(() => {
     if (!topBidder) return null;
     const target = topBidder.bidCents;
+    const startBudget = extending
+      ? Math.max(stepCents, target - extending.bidCents + 1)
+      : Math.max(stepCents, target + 1);
 
-    if (extending) {
-      if (extending.bidCents > target) return null;
-      const needed = Math.max(1, target - extending.bidCents + 1);
-      const start = Math.max(
-        1,
-        Math.round(pixelsForBudget(needed, pixelsSold) / (CELL_PX * CELL_PX)),
-      );
-      for (let added = start; added <= freeCells; added++) {
-        const dims = bestDimensions(extendingCells + added, extendingAspect, viewport);
-        const realAdded = dims.w * dims.h - extendingCells;
-        if (realAdded < 1) continue;
-        const delta = amountCentsForPixels(realAdded * CELL_PX * CELL_PX, pixelsSold);
-        if (extending.bidCents + delta > target) return delta;
+    const beats = (budget: number) => {
+      const q = settle(budget);
+      return (extending ? q.totalCents : q.chargeCents) > target ? q.chargeCents : null;
+    };
+
+    // Grow exponentially until we clear #1 (may need a milestone unlock), then
+    // binary-search the cheapest charge. A linear walk is too slow once unlock
+    // floors push the answer into the thousands of dollars.
+    let hi = startBudget;
+    let won: number | null = null;
+    for (let i = 0; i < 24; i++) {
+      won = beats(hi);
+      if (won != null) break;
+      hi = Math.min(hi * 2, 1_000_000_00);
+    }
+    if (won == null) return null;
+
+    let lo = startBudget;
+    while (hi - lo > stepCents) {
+      const mid = Math.round((lo + hi) / 2 / stepCents) * stepCents;
+      const charge = beats(mid);
+      if (charge != null) {
+        won = charge;
+        hi = mid;
+      } else {
+        lo = mid + stepCents;
       }
-      return null;
     }
-
-    const start = Math.max(
-      MIN_CELLS,
-      Math.round(pixelsForBudget(target, pixelsSold) / (CELL_PX * CELL_PX)),
-    );
-    for (let cells = start; cells <= freeCells; cells++) {
-      const dims = bestDimensions(cells, creativeAspect, viewport);
-      const price = amountCentsForPixels(dims.w * dims.h * CELL_PX * CELL_PX, pixelsSold);
-      if (price > target) return price;
-    }
-    return null;
-  }, [
-    creativeAspect,
-    extending,
-    extendingAspect,
-    extendingCells,
-    freeCells,
-    pixelsSold,
-    topBidder,
-    viewport,
-  ]);
+    return beats(hi) ?? won;
+  }, [extending, settle, stepCents, topBidder]);
 
   const setAmountCents = useCallback((cents: number) => {
     setAmount(String(Math.max(0, Math.round(cents / 100))));
   }, []);
+
+  const floorCells = extending ? 1 : MIN_CELLS;
+  const ceilCells = Math.max(floorCells, freeCells);
+  const stepFrom = extending ? quote.addedCells : quote.cells;
+
+  /**
+   * Steps by one minimum purchase. Nearby budgets often round into the same
+   * rectangle, so probe upward until the settled price really moves, otherwise
+   * the button would look dead. Probing budgets rather than cell counts keeps
+   * the result to an amount the buyer can actually be charged.
+   */
+  const nudgeAmount = useCallback(
+    (direction: 1 | -1) => {
+      const current = quote.chargeCents;
+      for (let step = 1; step <= ceilCells; step++) {
+        const probe = current + direction * stepCents * step;
+        if (probe < stepCents) return;
+
+        const next = settle(probe).chargeCents;
+        if (direction > 0 ? next > current : next < current) {
+          setAmountCents(next);
+          return;
+        }
+      }
+    },
+    [ceilCells, quote.chargeCents, setAmountCents, settle, stepCents],
+  );
 
   const clearExtendMode = useCallback(() => {
     setExtending(null);
     setExtendPrompt(null);
     setCreative(null);
     setCreativeFile(null);
-    setCreativeAspect(1);
+    setCreativeAspect(DEFAULT_ASPECT);
     setBrand("");
     setUrl("");
     setEmail("");
@@ -474,7 +491,7 @@ export default function Artboard({
       setUrl(placement.url.replace(/^https?:\/\//, ""));
       setCreative(placement.creative);
       setCreativeFile(null);
-      setCreativeAspect(placement.w / placement.h);
+      setCreativeAspect(clampAspect(placement.w / placement.h));
       setAmount("100");
       setHint(null);
     },
@@ -489,21 +506,26 @@ export default function Artboard({
     }
   }, [buyOpen]);
 
-  // Snap the field to what the money actually buys, but never while typing.
+  // Snap the field to what the money actually buys, but never while typing. The
+  // settled price is compared against the field itself: two different budgets
+  // can round to the same charge, and reacting only to a price change would
+  // leave the higher one on screen next to a smaller purchase.
   useEffect(() => {
-    if (!bidFocused) setAmountCents(quote.chargeCents);
-  }, [bidFocused, quote.chargeCents, setAmountCents]);
+    if (bidFocused) return;
+    const settled = String(Math.max(0, Math.round(quote.chargeCents / 100)));
+    if (settled !== amount) setAmount(settled);
+  }, [amount, bidFocused, quote.chargeCents]);
 
   const handleCreativeUpload = (file: File) => {
-    setCreativeFile(file);
-    const objectUrl = URL.createObjectURL(file);
-    setCreative(objectUrl);
-
-    const img = new Image();
-    img.onload = () => {
-      if (img.width && img.height) setCreativeAspect(img.width / img.height);
-    };
-    img.src = objectUrl;
+    void (async () => {
+      const trimmed = await trimCreativeFile(file);
+      const previousUrl = creativeObjectUrlRef.current;
+      creativeObjectUrlRef.current = trimmed.objectUrl;
+      setCreativeFile(trimmed.file);
+      setCreative(trimmed.objectUrl);
+      setCreativeAspect(clampAspect(trimmed.aspect));
+      if (previousUrl?.startsWith("blob:")) URL.revokeObjectURL(previousUrl);
+    })();
   };
 
   const identityReady = Boolean(
@@ -575,7 +597,7 @@ export default function Artboard({
           preview={extending ? null : previewRect}
           creative={creative}
           creativeFit={creativeFit}
-          viewport={viewport}
+          viewport={displayViewport}
           buyMode={buyOpen && !snapshot.auctionClosed}
           onPlacementActivate={(placement) => {
             if (extending?.id === placement.id) return;
@@ -635,7 +657,7 @@ export default function Artboard({
             </p>
             <p className="mt-0.5 font-condensed text-xs uppercase tracking-widest text-muted-foreground">
               {formatPixelPrice(snapshot.stats.currentPriceCents)} / pixel ·{" "}
-              {formatPixelPrice(MIN_PRINTED_PIXELS * snapshot.stats.currentPriceCents)} minimum
+              {formatPixelPrice(stepCents)} minimum
             </p>
           </div>
           <button
@@ -722,6 +744,9 @@ export default function Artboard({
                   <span className="font-condensed text-xs uppercase tracking-wider text-muted-foreground">
                     Click to upload logo (PNG, JPG, WebP)
                   </span>
+                  <span className="font-condensed text-[11px] text-muted-foreground/70">
+                    Your space keeps your logo&apos;s own shape
+                  </span>
                 </button>
               )}
             </div>
@@ -781,10 +806,7 @@ export default function Artboard({
           {topBidder && !isTopBidder && (
             <div className="border border-[var(--accent-yellow)]/35 bg-[var(--accent-yellow)]/8 p-3">
               <div className="flex items-center">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center border border-[var(--accent-yellow)]/50 text-[var(--accent-yellow)]">
-                  <Trophy className="h-5 w-5" />
-                </div>
-                <div className="ml-3 min-w-0 flex-1">
+                <div className="min-w-0 flex-1">
                   <p className="font-condensed text-[10px] uppercase tracking-widest text-muted-foreground">
                     Current #1
                   </p>
@@ -833,21 +855,48 @@ export default function Artboard({
             >
               {extending ? "Add to your bid" : "Your bid"}
             </label>
-            <div className="relative">
-              <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-display text-xl text-muted-foreground">
-                $
-              </span>
-              <input
-                id="bid-amount"
-                type="text"
-                inputMode="numeric"
-                aria-label={extending ? "Amount to add in USD" : "Your bid in USD"}
-                value={amount}
-                onFocus={() => setBidFocused(true)}
-                onChange={(e) => setAmount(e.target.value)}
-                onBlur={() => setBidFocused(false)}
-                className="h-14 w-full rounded border-2 border-[var(--accent-yellow)]/55 bg-background pl-10 pr-4 font-display text-2xl tracking-wide text-white focus:border-[var(--accent-yellow)] focus:outline-none"
-              />
+            <div className="flex items-stretch gap-2">
+              <button
+                type="button"
+                onClick={() => nudgeAmount(-1)}
+                disabled={stepFrom <= floorCells}
+                aria-label={`Lower by ${usd(stepCents)}`}
+                className="flex h-14 w-14 shrink-0 items-center justify-center rounded border-2 border-[var(--accent-yellow)]/55 bg-background text-[var(--accent-yellow)] transition hover:border-[var(--accent-yellow)] hover:bg-[var(--accent-yellow)] hover:text-black disabled:cursor-not-allowed disabled:border-border disabled:text-muted-foreground disabled:hover:bg-background"
+              >
+                <Minus className="h-5 w-5" />
+              </button>
+
+              <div className="relative flex-1">
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-display text-xl text-muted-foreground">
+                  $
+                </span>
+                <input
+                  id="bid-amount"
+                  type="text"
+                  inputMode="numeric"
+                  aria-label={extending ? "Amount to add in USD" : "Your bid in USD"}
+                  value={amount}
+                  onFocus={() => setBidFocused(true)}
+                  onChange={(e) => setAmount(e.target.value)}
+                  onBlur={() => setBidFocused(false)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+                    e.preventDefault();
+                    nudgeAmount(e.key === "ArrowUp" ? 1 : -1);
+                  }}
+                  className="h-14 w-full rounded border-2 border-[var(--accent-yellow)]/55 bg-background pl-10 pr-4 font-display text-2xl tracking-wide text-white focus:border-[var(--accent-yellow)] focus:outline-none"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => nudgeAmount(1)}
+                disabled={stepFrom >= ceilCells}
+                aria-label={`Raise by ${usd(stepCents)}`}
+                className="flex h-14 w-14 shrink-0 items-center justify-center rounded border-2 border-[var(--accent-yellow)]/55 bg-background text-[var(--accent-yellow)] transition hover:border-[var(--accent-yellow)] hover:bg-[var(--accent-yellow)] hover:text-black disabled:cursor-not-allowed disabled:border-border disabled:text-muted-foreground disabled:hover:bg-background"
+              >
+                <Plus className="h-5 w-5" />
+              </button>
             </div>
 
             {extending && (
@@ -883,7 +932,9 @@ export default function Artboard({
           {!packed && (
             <div className="flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>The shirt cannot fit that much space yet. Try a smaller amount.</span>
+              <span>
+                That is more space than any unlocked shirt size can hold. Try a smaller amount.
+              </span>
             </div>
           )}
 

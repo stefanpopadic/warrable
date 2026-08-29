@@ -29,7 +29,7 @@ export const placements = pgTable(
     websiteUrl: text("website_url").notNull(),
     creativeUrl: text("creative_url"),
     creativePathname: text("creative_pathname"),
-    creativeFit: varchar("creative_fit", { length: 10 }).notNull().default("contain"),
+    creativeFit: varchar("creative_fit", { length: 10 }).notNull().default("cover"),
     mimeType: varchar("mime_type", { length: 32 }),
     x: integer("x").notNull(),
     y: integer("y").notNull(),

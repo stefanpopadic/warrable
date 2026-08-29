@@ -279,8 +279,8 @@ export function findAutoStackPlacement(options: AutoStackOptions): AutoStackResu
     const curAspect = w / h;
     const aspectDiff = Math.abs(Math.log(curAspect / aspect));
 
-    // Strict constraint: prevent distorting into thin strips (max ~30% aspect variance)
-    if (aspectDiff > 0.32) continue;
+    // Keep the paid rect close to the creative — loose drift left empty bars.
+    if (aspectDiff > 0.08) continue;
 
     const areaDiff = Math.abs(area - safeCells);
     candidateDimensions.push({ w, h, areaDiff, aspectDiff });

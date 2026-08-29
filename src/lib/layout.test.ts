@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { isRectInViewport, rectsOverlap, viewportForLevel, type Rect } from "./auction";
-import { bestDimensions, packBoard, sortLayoutItems, type LayoutItem } from "./layout";
+import {
+  DEFAULT_ASPECT,
+  MAX_ASPECT,
+  bestDimensions,
+  clampAspect,
+  packBoard,
+  quotePurchase,
+  sortLayoutItems,
+  type LayoutItem,
+} from "./layout";
 
 const viewport = viewportForLevel(0);
 
@@ -67,6 +76,37 @@ describe("bestDimensions", () => {
     const dims = bestDimensions(viewport.w * viewport.h * 4, 1, viewport);
     expect(dims.w).toBeLessThanOrEqual(viewport.w);
     expect(dims.h).toBeLessThanOrEqual(viewport.h);
+  });
+
+  it("follows the creative's own ratio tightly", () => {
+    for (const aspect of [0.4, 0.8, 1, 1.6, 2.5, 4]) {
+      for (const cells of [12, 60, 120, 240]) {
+        const dims = bestDimensions(cells, aspect, viewport);
+        expect(Math.abs(Math.log(dims.w / dims.h / aspect))).toBeLessThan(0.1);
+      }
+    }
+  });
+
+  it("would rather leave cells unused than stretch into empty bars", () => {
+    const dims = bestDimensions(100, 1, viewport);
+    expect(dims.w).toBe(dims.h);
+    expect(dims.w * dims.h).toBeLessThanOrEqual(100);
+  });
+
+  it("letterboxes an extreme banner instead of printing a sliver", () => {
+    const dims = bestDimensions(60, 40, viewport);
+    expect(dims.h).toBeGreaterThan(1);
+    expect(dims.w / dims.h).toBeLessThanOrEqual(MAX_ASPECT + 0.5);
+  });
+
+  it("defaults to a rectangle when the ratio is unusable", () => {
+    for (const bad of [0, Number.NaN, -3, Number.POSITIVE_INFINITY]) {
+      expect(clampAspect(bad)).toBe(DEFAULT_ASPECT);
+    }
+    expect(clampAspect(40)).toBe(MAX_ASPECT);
+    expect(DEFAULT_ASPECT).toBeGreaterThan(1);
+    const dims = bestDimensions(60, DEFAULT_ASPECT, viewport);
+    expect(dims.w).toBeGreaterThan(dims.h);
   });
 });
 
@@ -188,5 +228,40 @@ describe("packBoard", () => {
     const started = Date.now();
     expect(packBoard(many, big)).not.toBeNull();
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("quotePurchase", () => {
+  it("zooms to the next milestone when the spend unlocks it", () => {
+    // Level 1 board (30x42) nearly full; $7k on top of $18.5k unlocks level 2 ($25k).
+    const level1 = viewportForLevel(1);
+    const used = level1.w * level1.h - 20;
+    const quote = quotePurchase({
+      budgetCents: 7_000_00,
+      pixelsSold: used * 100,
+      raisedCents: 18_500_00,
+      usedCells: used,
+      aspect: 2.5,
+      minAddedCells: 1,
+    });
+
+    expect(quote.unlocksMilestone).toBe(true);
+    expect(quote.viewport).toEqual(viewportForLevel(2));
+    expect(quote.addedCells).toBeGreaterThan(20);
+  });
+
+  it("stays on the current milestone for a small buy", () => {
+    const level1 = viewportForLevel(1);
+    const quote = quotePurchase({
+      budgetCents: 25_00,
+      pixelsSold: 75_700,
+      raisedCents: 18_925_00,
+      usedCells: 757,
+      aspect: 2.5,
+      minAddedCells: 1,
+    });
+
+    expect(quote.unlocksMilestone).toBe(false);
+    expect(quote.viewport).toEqual(level1);
   });
 });

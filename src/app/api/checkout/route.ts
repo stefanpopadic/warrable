@@ -6,7 +6,6 @@ import {
   attachCreative,
   attachExtensionCheckoutSession,
   createPlacementExtension,
-  getCurrentViewport,
   planNewPlacement,
   releaseExtension,
   releasePlacement,
@@ -32,8 +31,7 @@ export async function POST(request: Request) {
   let blobPathname: string | null = null;
 
   try {
-    const viewport = await getCurrentViewport();
-    const input = await parseCheckoutFormData(await request.formData(), viewport);
+    const input = await parseCheckoutFormData(await request.formData());
     const requesterHash = getRequesterHash(request);
     const baseUrl = getCheckoutBaseUrl(request);
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);

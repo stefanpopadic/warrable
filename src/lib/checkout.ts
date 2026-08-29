@@ -3,7 +3,11 @@ import "server-only";
 import { createHmac } from "node:crypto";
 import { fileTypeFromBuffer } from "file-type";
 import { z } from "zod";
-import type { Rect } from "@/lib/auction";
+import { MILESTONES, MAX_MILESTONE_LEVEL } from "@/lib/auction";
+import { DEFAULT_ASPECT, clampAspect } from "@/lib/layout";
+
+const MAX_BOARD_CELLS =
+  MILESTONES[MAX_MILESTONE_LEVEL].cols * MILESTONES[MAX_MILESTONE_LEVEL].rows;
 
 const MAX_CREATIVE_BYTES = 4 * 1024 * 1024;
 const ACCEPTED_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -28,7 +32,9 @@ const checkoutFields = z.object({
   // Buyers choose an amount, never a position. The server sizes the rect from
   // the cell count and the creative's aspect, then the packer places it.
   cells: z.coerce.number().int().min(1, "Choose how much space to buy."),
-  aspect: z.coerce.number().min(0.2).max(5).default(1),
+  // A logo keeps its own shape. Ratios outside what the board can print are
+  // clamped instead of rejected, so an unusually wide banner still checks out.
+  aspect: z.coerce.number().catch(DEFAULT_ASPECT).transform(clampAspect),
   termsAccepted: z.literal("true"),
   extendPlacementId: z.string().trim().uuid().optional(),
 });
@@ -52,22 +58,24 @@ function normalizeWebsite(value: string) {
   return normalized;
 }
 
-export async function parseCheckoutFormData(formData: FormData, viewport: Rect) {
+export async function parseCheckoutFormData(formData: FormData) {
   const extendRaw = formData.get("extendPlacementId");
   const parsed = checkoutFields.parse({
     brand: formData.get("brand"),
     website: formData.get("website"),
     email: formData.get("email"),
-    creativeFit: formData.get("creativeFit") ?? "contain",
+    creativeFit: formData.get("creativeFit") ?? "cover",
     cells: formData.get("cells"),
-    aspect: formData.get("aspect") ?? 1,
+    aspect: formData.get("aspect") ?? DEFAULT_ASPECT,
     termsAccepted: formData.get("termsAccepted"),
     extendPlacementId:
       typeof extendRaw === "string" && extendRaw.trim() ? extendRaw.trim() : undefined,
   });
 
-  if (parsed.cells > viewport.w * viewport.h) {
-    throw new Error("That is more space than the shirt has unlocked.");
+  // Cap against the final milestone. A purchase can unlock the next size, so
+  // today's viewport is the wrong ceiling.
+  if (parsed.cells > MAX_BOARD_CELLS) {
+    throw new Error("That is more space than the shirt can ever hold.");
   }
 
   if (parsed.extendPlacementId) {

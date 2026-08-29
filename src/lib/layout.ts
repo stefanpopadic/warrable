@@ -1,4 +1,12 @@
-import type { Rect } from "@/lib/auction";
+import {
+  amountCentsForPixels,
+  CELL_PX,
+  milestoneForRaised,
+  pixelsForBudget,
+  viewportForLevel,
+  viewportForRaised,
+  type Rect,
+} from "./auction";
 
 /**
  * Deterministic board packer.
@@ -31,8 +39,27 @@ const Y_SQUASH = 0.72;
 const CONTACT_WEIGHT = 20;
 const DISTANCE_WEIGHT = 1.35;
 
-/** Max log-ratio a rect may drift from the creative's natural aspect (~30%). */
-const MAX_ASPECT_DRIFT = 0.32;
+/**
+ * Max log-ratio a rect may drift from the creative's natural aspect (~8%).
+ * Looser drift was filling leftover cells by stretching the slot, which left
+ * empty bars inside the logo when object-fit is contain.
+ */
+const MAX_ASPECT_DRIFT = 0.08;
+
+/**
+ * Printable aspect range. Past these bounds a slot becomes a one-cell sliver
+ * that reads as a line on the shirt, so extreme creatives are letterboxed into
+ * the nearest printable shape rather than sized literally.
+ */
+export const MIN_ASPECT = 0.2;
+export const MAX_ASPECT = 5;
+/** Median shape of real placements, used until a buyer uploads their logo. */
+export const DEFAULT_ASPECT = 2.5;
+
+export function clampAspect(aspect: number): number {
+  if (!Number.isFinite(aspect) || aspect <= 0) return DEFAULT_ASPECT;
+  return Math.max(MIN_ASPECT, Math.min(MAX_ASPECT, aspect));
+}
 
 export function sortLayoutItems<T extends Pick<LayoutItem, "bidCents" | "tieBreak" | "id">>(
   items: T[],
@@ -108,9 +135,9 @@ class Occupancy {
 }
 
 /**
- * Cells to a width/height that keeps the creative's shape. Height rounds down so
- * a bid is a hard ceiling: preserving the aspect ratio can never bill more cells
- * than the buyer asked for.
+ * Cells to a width/height that keeps the creative's shape. Shape wins over
+ * burning every purchased cell: leftover budget is better than empty bars
+ * inside the logo. Area never exceeds `cells`.
  */
 export function bestDimensions(
   cells: number,
@@ -118,32 +145,48 @@ export function bestDimensions(
   viewport: Rect,
 ): { w: number; h: number } {
   const safeCells = Math.max(1, Math.min(Math.round(cells), viewport.w * viewport.h));
-  const safeAspect = Math.max(0.2, Math.min(5.0, aspect || 1));
-  const idealW = Math.max(1, Math.round(Math.sqrt(safeCells * safeAspect)));
+  const safeAspect = clampAspect(aspect);
+  const maxW = Math.min(viewport.w, safeCells);
 
-  const candidates: { w: number; h: number; aspectDiff: number; areaDiff: number }[] = [];
+  type Candidate = { w: number; h: number; aspectDiff: number; area: number };
+  const tight: Candidate[] = [];
+  const loose: Candidate[] = [];
 
-  for (let dw = -4; dw <= 4; dw++) {
-    const w = idealW + dw;
-    if (w < 1 || w > viewport.w || w > safeCells) continue;
+  for (let w = 1; w <= maxW; w++) {
+    const targetH = w / safeAspect;
+    const heights = new Set<number>([
+      Math.max(1, Math.round(targetH)),
+      Math.max(1, Math.floor(targetH)),
+      Math.max(1, Math.ceil(targetH)),
+      Math.max(1, Math.min(viewport.h, Math.floor(safeCells / w))),
+    ]);
 
-    const h = Math.max(1, Math.floor(safeCells / w));
-    if (h > viewport.h) continue;
+    for (const h of heights) {
+      if (h < 1 || h > viewport.h) continue;
+      const area = w * h;
+      if (area < 1 || area > safeCells) continue;
 
-    const aspectDiff = Math.abs(Math.log(w / h / safeAspect));
-    if (aspectDiff > MAX_ASPECT_DRIFT) continue;
-
-    candidates.push({ w, h, aspectDiff, areaDiff: Math.abs(w * h - safeCells) });
+      const aspectDiff = Math.abs(Math.log(w / h / safeAspect));
+      const candidate = { w, h, aspectDiff, area };
+      if (aspectDiff <= MAX_ASPECT_DRIFT) tight.push(candidate);
+      else loose.push(candidate);
+    }
   }
 
-  if (candidates.length === 0) {
-    const w = Math.min(viewport.w, safeCells, Math.max(1, idealW));
-    const h = Math.min(viewport.h, Math.max(1, Math.floor(safeCells / w)));
-    return { w, h };
+  const pool = tight.length > 0 ? tight : loose;
+  if (pool.length === 0) {
+    return { w: 1, h: 1 };
   }
 
-  candidates.sort((a, b) => a.aspectDiff * 2 + a.areaDiff - (b.aspectDiff * 2 + b.areaDiff));
-  return { w: candidates[0].w, h: candidates[0].h };
+  // Prefer true shape, then spend as much of the budget as the shape allows.
+  pool.sort(
+    (a, b) =>
+      a.aspectDiff - b.aspectDiff ||
+      b.area - a.area ||
+      a.w - b.w ||
+      a.h - b.h,
+  );
+  return { w: pool[0].w, h: pool[0].h };
 }
 
 /**
@@ -270,4 +313,116 @@ export function packBoard(
   }
 
   return placed;
+}
+
+export type PurchaseQuote = {
+  dims: { w: number; h: number };
+  cells: number;
+  addedCells: number;
+  chargeCents: number;
+  totalCents: number;
+  /** Viewport after this purchase lands — may be a larger milestone. */
+  viewport: Rect;
+  /** True when the charge unlocks a bigger shirt than the board shows today. */
+  unlocksMilestone: boolean;
+};
+
+/**
+ * Turn a dollar budget into a printable rectangle. The typed budget picks the
+ * milestone; the charge is then grown if needed so the payment actually crosses
+ * that unlock. Shape always follows the creative — leftover cells beat empty bars.
+ */
+export function quotePurchase(input: {
+  budgetCents: number;
+  pixelsSold: number;
+  raisedCents: number;
+  usedCells: number;
+  aspect: number;
+  minAddedCells: number;
+  /** Current footprint when growing an existing placement. */
+  baseCells?: number;
+  baseBidCents?: number;
+}): PurchaseQuote {
+  const baseCells = Math.max(0, input.baseCells ?? 0);
+  const baseBidCents = Math.max(0, input.baseBidCents ?? 0);
+  const current = milestoneForRaised(input.raisedCents);
+  const budget = Math.max(0, input.budgetCents);
+
+  // Typed amount chooses the shirt size. Never shrink back when the shaped
+  // rect prices out under the unlock line — grow cells instead.
+  const intent = milestoneForRaised(input.raisedCents + budget);
+  const viewport = viewportForLevel(intent.level);
+  const freeAdded = Math.max(0, viewport.w * viewport.h - input.usedCells);
+  const unlockNeed =
+    intent.level > current.level
+      ? Math.max(0, intent.unlockCents - input.raisedCents)
+      : 0;
+  const spendFloor = Math.max(budget, unlockNeed);
+
+  const startCells = Math.min(
+    Math.max(
+      input.minAddedCells,
+      Math.round(pixelsForBudget(spendFloor, input.pixelsSold) / (CELL_PX * CELL_PX)),
+    ),
+    Math.max(input.minAddedCells, freeAdded),
+  );
+
+  let dims = { w: 1, h: 1 };
+  let addedCells = 0;
+  let chargeCents = 0;
+
+  const sizeAdded = (added: number) => {
+    if (baseCells > 0) {
+      const next = bestDimensions(baseCells + added, input.aspect, viewport);
+      return {
+        dims: next,
+        addedCells: Math.max(0, next.w * next.h - baseCells),
+      };
+    }
+    const next = bestDimensions(added, input.aspect, viewport);
+    return { dims: next, addedCells: next.w * next.h };
+  };
+
+  let cells = startCells;
+  const cellCeiling = Math.max(startCells, freeAdded);
+  while (cells <= cellCeiling) {
+    const sized = sizeAdded(Math.max(input.minAddedCells, cells));
+    dims = sized.dims;
+    addedCells = sized.addedCells;
+    chargeCents = amountCentsForPixels(
+      addedCells * CELL_PX * CELL_PX,
+      input.pixelsSold,
+    );
+
+    const levelAfter = milestoneForRaised(input.raisedCents + chargeCents).level;
+    if (levelAfter >= intent.level && addedCells >= input.minAddedCells) break;
+
+    // Shape can stay fixed across many cell counts; jump to the next rect.
+    cells = Math.max(cells + 1, addedCells + 1);
+  }
+
+  // Keep spending toward the typed budget with the same shape — unused cells
+  // are fine, a half-priced logo for a $2k bid is not.
+  while (chargeCents < budget && cells < cellCeiling) {
+    cells = Math.max(cells + 1, addedCells + 1);
+    const sized = sizeAdded(Math.max(input.minAddedCells, cells));
+    if (sized.addedCells <= addedCells) continue;
+    dims = sized.dims;
+    addedCells = sized.addedCells;
+    chargeCents = amountCentsForPixels(
+      addedCells * CELL_PX * CELL_PX,
+      input.pixelsSold,
+    );
+  }
+
+  return {
+    dims,
+    cells: dims.w * dims.h,
+    addedCells,
+    chargeCents,
+    totalCents: baseBidCents + chargeCents,
+    viewport: viewportForRaised(input.raisedCents + chargeCents),
+    unlocksMilestone:
+      milestoneForRaised(input.raisedCents + chargeCents).level > current.level,
+  };
 }

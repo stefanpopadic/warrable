@@ -12,9 +12,9 @@ import {
   type Rect,
 } from "@/lib/auction";
 import {
-  bestDimensions,
   findFreeRect,
   packBoard,
+  quotePurchase,
   type LayoutItem,
   type PlacedItem,
 } from "@/lib/layout";
@@ -88,32 +88,42 @@ export async function getCurrentViewport() {
  */
 export async function planNewPlacement(input: { cells: number; aspect: number }) {
   const state = await loadBoardState();
-  const paidCells = state.paid.reduce((total, row) => total + row.w * row.h, 0);
-  const reservedCells = state.reserved.reduce((total, rect) => total + rect.w * rect.h, 0);
-  const freeCells =
-    state.viewport.w * state.viewport.h - paidCells - reservedCells - state.pendingCells;
+  const usedCells =
+    state.paid.reduce((total, row) => total + row.w * row.h, 0) +
+    state.reserved.reduce((total, rect) => total + rect.w * rect.h, 0) +
+    state.pendingCells;
 
-  const dims = bestDimensions(input.cells, input.aspect, state.viewport);
-  if (dims.w * dims.h > freeCells) throw new Error("not_enough_space");
+  // Price the requested cells first so we know which milestone this purchase unlocks.
+  const budgetCents = amountCentsForPixels(
+    Math.max(1, input.cells) * CELL_PX * CELL_PX,
+    state.pixelsSold,
+  );
+  const quote = quotePurchase({
+    budgetCents,
+    pixelsSold: state.pixelsSold,
+    raisedCents: state.raisedCents,
+    usedCells,
+    aspect: input.aspect,
+    minAddedCells: 1,
+  });
+  const dims = quote.dims;
+  if (dims.w * dims.h < 1) throw new Error("not_enough_space");
 
   const rect = findFreeRect(dims.w, dims.h, [
     ...state.paid.map((row) => row.rect),
     ...state.reserved,
-  ], state.viewport);
+  ], quote.viewport);
   if (!rect) throw new Error("not_enough_space");
 
   // The board must still lay out once this becomes paid, or the buyer would pay
-  // for space that cannot be arranged.
-  const amountCents = amountCentsForPixels(
-    dims.w * dims.h * CELL_PX * CELL_PX,
-    state.pixelsSold,
-  );
+  // for space that cannot be arranged. Pack on the viewport this charge unlocks.
+  const amountCents = quote.chargeCents;
   const feasible = packBoard(
     [
       ...state.paid.map(({ id, w, h, bidCents, tieBreak }) => ({ id, w, h, bidCents, tieBreak })),
       { id: "pending", w: dims.w, h: dims.h, bidCents: amountCents, tieBreak: "9999" },
     ],
-    state.viewport,
+    quote.viewport,
     { blocked: state.reserved },
   );
   if (!feasible) throw new Error("not_enough_space");
@@ -284,32 +294,50 @@ function planExtension(
 
   const oldCells = current.w * current.h;
   const aspect = current.w / current.h;
-  const dims = bestDimensions(oldCells + Math.max(1, requestedCells), aspect, state.viewport);
-  const addedCells = dims.w * dims.h - oldCells;
-  if (addedCells < 1) return null;
+  const usedCells =
+    state.paid.reduce((total, row) => total + row.w * row.h, 0) +
+    state.reserved.reduce((total, rect) => total + rect.w * rect.h, 0) +
+    state.pendingCells;
 
-  // Added pixels are priced at today's tier and stacked on what was already paid,
-  // so the total can only ever go up.
-  const deltaCents = amountCentsForPixels(addedCells * CELL_PX * CELL_PX, state.pixelsSold);
-  const newAmountCents = paidAmountCents + deltaCents;
+  const budgetCents = amountCentsForPixels(
+    Math.max(1, requestedCells) * CELL_PX * CELL_PX,
+    state.pixelsSold,
+  );
+  const quote = quotePurchase({
+    budgetCents,
+    pixelsSold: state.pixelsSold,
+    raisedCents: state.raisedCents,
+    usedCells,
+    aspect,
+    minAddedCells: 1,
+    baseCells: oldCells,
+    baseBidCents: paidAmountCents,
+  });
+  if (quote.addedCells < 1) return null;
 
   const items = state.paid.map((row) =>
     row.id === placementId
-      ? { id: row.id, w: dims.w, h: dims.h, bidCents: newAmountCents, tieBreak: row.tieBreak }
+      ? {
+          id: row.id,
+          w: quote.dims.w,
+          h: quote.dims.h,
+          bidCents: quote.totalCents,
+          tieBreak: row.tieBreak,
+        }
       : { id: row.id, w: row.w, h: row.h, bidCents: row.bidCents, tieBreak: row.tieBreak },
   );
 
-  const packed = packBoard(items, state.viewport, { blocked: state.reserved });
+  const packed = packBoard(items, quote.viewport, { blocked: state.reserved });
   if (!packed) return null;
 
   return {
     placementId,
     oldCells,
-    newWidth: dims.w,
-    newHeight: dims.h,
-    addedCells,
-    deltaCents,
-    newAmountCents,
+    newWidth: quote.dims.w,
+    newHeight: quote.dims.h,
+    addedCells: quote.addedCells,
+    deltaCents: quote.chargeCents,
+    newAmountCents: quote.totalCents,
     packed,
   };
 }
@@ -368,16 +396,6 @@ export async function createPlacementExtension(input: {
 
   const requestedCells = Math.max(1, Math.round(input.addedCells));
   const state = await loadBoardState();
-
-  const freeCells =
-    state.viewport.w * state.viewport.h -
-    state.paid.reduce((total, row) => total + row.w * row.h, 0) -
-    state.reserved.reduce((total, rect) => total + rect.w * rect.h, 0) -
-    state.pendingCells;
-
-  if (requestedCells > freeCells) {
-    throw new Error("not_enough_space");
-  }
 
   const plan = planExtension(
     state,
