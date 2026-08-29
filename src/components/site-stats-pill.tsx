@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 type SiteStats = {
   onlineCount: number;
   visitorCount: number;
+  clickCount: number;
 };
 
 const VIEW_KEY = "mdt-site-view-recorded";
@@ -50,6 +51,7 @@ export function SiteStatsPill() {
 
   const online = stats?.onlineCount ?? 0;
   const visitors = stats?.visitorCount ?? 0;
+  const clicks = stats?.clickCount ?? 0;
 
   return (
     <div
@@ -69,14 +71,12 @@ export function SiteStatsPill() {
         </strong>
         visitors
       </span>
-      <a
-        href="https://datafa.st"
-        target="_blank"
-        rel="noreferrer"
-        className="flex shrink-0 items-center px-3 py-2 text-foreground transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground"
-      >
-        Stats ↗
-      </a>
+      <span className="inline-flex items-center gap-1.5 px-3 py-2 text-muted-foreground">
+        <strong className="font-normal tabular-nums text-foreground">
+          {clicks.toLocaleString()}
+        </strong>
+        clicks
+      </span>
     </div>
   );
 }

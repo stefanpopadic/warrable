@@ -30,17 +30,14 @@ export function LegalPage({
             aria-label="Legal"
             className="mt-14 flex flex-wrap gap-x-5 gap-y-2 border-t border-border pt-6 font-condensed text-xs uppercase tracking-widest text-muted-foreground"
           >
-            <Link href="/rules" className="hover:text-foreground">
-              Rules
-            </Link>
             <Link href="/terms" className="hover:text-foreground">
               Terms
             </Link>
+            <Link href="/rules" className="hover:text-foreground">
+              Rules
+            </Link>
             <Link href="/privacy" className="hover:text-foreground">
               Privacy
-            </Link>
-            <Link href="/about" className="hover:text-foreground">
-              About
             </Link>
           </nav>
         </div>

@@ -339,8 +339,8 @@ function ExpensiveShirts({ raisedCents }: { raisedCents: number }) {
     isMdt: false,
   }));
   ranked.push({
-    name: "MILLION DOLLAR T-SHIRT",
-    year: "",
+    name: "MDTshirt",
+    year: "2026",
     price: usd(raisedCents),
     note: "Current total value of all sold shirt space",
     image: "/shirts/1milliondollartshirt.jpg",
@@ -444,32 +444,40 @@ function ExpensiveShirts({ raisedCents }: { raisedCents: number }) {
 
 const FRIENDLY_QUESTIONS: [string, string][] = [
   [
+    "What is this?",
+    "Brands buy permanent logo space on a live artboard that gets printed on one real black shirt. Pay more and your logo gets bigger and closer to the center. Your pixels stay yours for good.",
+  ],
+  [
+    "Is this like outbid.lol or the Million Dollar Homepage?",
+    "A bit of both. Money ranks visibility like outbid.lol — the biggest bidder owns the center. Pixels stay yours like the Million Dollar Homepage — nobody can take what you paid for. As fundraising milestones unlock a bigger board, logos can look smaller on the shirt, but your pixel count never goes down.",
+  ],
+  [
     "How does the pricing work?",
     "Pricing starts at $0.25 per printed pixel and doubles every 100,000 pixels sold. Large purchases are split across tiers automatically. Minimum purchase is 100 pixels.",
   ],
   [
     "Can another buyer outbid my placement?",
-    "Nobody can take or shrink the pixels you paid for. The board does sort itself by amount paid, so the biggest buyer always holds the center and your position can shift as others buy or grow. Your pixel count never goes down.",
+    "Nobody can take your pixels or buy them out from under you. The board sorts by amount paid, so the biggest buyer holds the center and your position can shift as others buy or grow. When milestones unlock more space, the artboard gets bigger — your logo may look smaller relative to the shirt, but the number of pixels you own stays the same.",
+  ],
+  [
+    "Do I choose where my logo goes?",
+    "No. Your bid and logo shape decide the rectangle size; a packer places every logo on the board. Center is earned by spend, not picked by hand.",
   ],
   [
     "Can I add more pixels later?",
     "Yes. Click your logo while the buy panel is open, enter how much you want to add, and pay only for the new pixels at the current price. Use the same email from your original purchase.",
   ],
   [
-    "What artwork should I upload?",
-    "A square or rectangular PNG, JPG or WebP logo up to 4 MB. Transparent PNGs stay transparent; photographs fill the selected region.",
+    "What do I actually get?",
+    "A live, clickable spot on the artboard now. When the auction closes, the board is locked, exported at print resolution, and printed edge-to-edge on the back of a black shirt. Every buyer gets the final artwork file and a permanent place in the archive.",
   ],
   [
     "When do I pay?",
-    "At checkout. Stripe reserves your space for 30 minutes, and the logo goes live only after payment is confirmed. Completed purchases are final and non-refundable.",
+    "At Stripe checkout. We reserve your space for 30 minutes, and the logo goes live only after payment is confirmed. All purchases are final — no refunds.",
   ],
   [
-    "What happens when the auction closes?",
-    "The artboard is locked, exported at print resolution and printed edge-to-edge on the back of a black shirt. Every buyer gets the final artwork file.",
-  ],
-  [
-    "What do I actually get?",
-    "Your creative on a real, worn shirt, photographed and featured in content around the project — plus a permanent spot in the archived artboard.",
+    "What artwork should I upload?",
+    "A square or rectangular PNG, JPG, or WebP logo up to 4 MB. Your paid slot follows your logo's shape; photographs fill the selected region.",
   ],
 ];
 
@@ -606,8 +614,8 @@ function HomeContent({
             T-SHIRTS
           </h2>
           <p className="mt-4 max-w-2xl leading-relaxed text-muted-foreground">
-            Documented prices only. Million Dollar T-Shirt enters the ranking at the total value of all space
-            sold — currently {usd(stats.raisedCents)}. Target: $1,000,000.
+            The list below ranks the most expensive T-shirts ever sold on the internet. Current:{" "}
+            {usd(stats.raisedCents)} · Max: $1,000,000.
           </p>
           <ExpensiveShirts raisedCents={stats.raisedCents} />
         </div>
@@ -640,19 +648,6 @@ function HomeContent({
               </details>
             ))}
           </div>
-        </div>
-      </section>
-
-      <section className="px-6 py-16 lg:px-8">
-        <div className="mx-auto max-w-3xl">
-          <h2 className="section-heading">
-            BUY SPACE ON
-            <br />
-            THE SHIRT.
-          </h2>
-          <BuyButton className="mt-6 inline-block bg-foreground px-8 py-4 font-display text-2xl tracking-wide text-background transition-colors hover:bg-accent-yellow hover:text-accent-yellow-foreground">
-            CLAIM YOUR PIXELS
-          </BuyButton>
         </div>
       </section>
     </PageShell>

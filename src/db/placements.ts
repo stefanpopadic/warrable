@@ -898,39 +898,41 @@ export async function recordPlacementLinkClick(placementId: string) {
 
 export async function getSiteStats() {
   const sql = getSql();
-  const rows = asRows<{ visitor_count: number; online_count: number }>(await sql`
-    SELECT visitor_count, online_count
-    FROM site_stats
-    WHERE id = 'default'
-    LIMIT 1
-  `);
-  const row = rows[0];
+  const [statsResult, clickResult] = await Promise.all([
+    sql`
+      SELECT visitor_count, online_count
+      FROM site_stats
+      WHERE id = 'default'
+      LIMIT 1
+    `,
+    sql`
+      SELECT COALESCE(SUM(link_clicks), 0)::int AS click_count
+      FROM placements
+      WHERE status = 'paid'
+    `,
+  ]);
+  const row = asRows<{ visitor_count: number; online_count: number }>(statsResult)[0];
+  const clickCount = Number(
+    asRows<{ click_count: number }>(clickResult)[0]?.click_count ?? 0,
+  );
   const placeholderOnline = Number(process.env.SITE_STATS_ONLINE_PLACEHOLDER ?? 0);
   return {
     visitorCount: Number(row?.visitor_count ?? 0),
     onlineCount: placeholderOnline > 0 ? placeholderOnline : Number(row?.online_count ?? 0),
+    clickCount,
   };
 }
 
 export async function recordSiteView() {
   const sql = getSql();
-  const rows = asRows<{ visitor_count: number; online_count: number }>(await sql`
+  await sql`
     UPDATE site_stats
     SET
       visitor_count = visitor_count + 1,
       updated_at = now()
     WHERE id = 'default'
-    RETURNING visitor_count, online_count
-  `);
-  return getSiteStatsFromRow(rows[0]);
-}
-
-function getSiteStatsFromRow(row?: { visitor_count: number; online_count: number }) {
-  const placeholderOnline = Number(process.env.SITE_STATS_ONLINE_PLACEHOLDER ?? 0);
-  return {
-    visitorCount: Number(row?.visitor_count ?? 0),
-    onlineCount: placeholderOnline > 0 ? placeholderOnline : Number(row?.online_count ?? 0),
-  };
+  `;
+  return getSiteStats();
 }
 
 export async function getArtboardSnapshot(): Promise<ArtboardSnapshot> {

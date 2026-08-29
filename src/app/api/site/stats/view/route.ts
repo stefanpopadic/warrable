@@ -8,6 +8,7 @@ export async function POST() {
     return Response.json({
       onlineCount: stats.onlineCount,
       visitorCount: stats.visitorCount,
+      clickCount: stats.clickCount,
     });
   } catch (error) {
     console.error("Site view recording failed", {

@@ -119,20 +119,15 @@ export function PageShell({
 
           <footer className="hidden border-t border-border px-6 py-6 font-condensed text-xs uppercase tracking-widest text-muted-foreground lg:block lg:px-8">
             <div className="mx-auto max-w-3xl">
-              <p>milliondollartshirt.lol</p>
-              <p className="mt-1">An internet experiment. Printed on one black shirt.</p>
-              <nav aria-label="Legal" className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
-                <Link href="/rules" className="hover:text-foreground">
-                  Rules
-                </Link>
+              <nav aria-label="Legal" className="flex flex-wrap gap-x-4 gap-y-1">
                 <Link href="/terms" className="hover:text-foreground">
                   Terms
                 </Link>
+                <Link href="/rules" className="hover:text-foreground">
+                  Rules
+                </Link>
                 <Link href="/privacy" className="hover:text-foreground">
                   Privacy
-                </Link>
-                <Link href="/about" className="hover:text-foreground">
-                  About
                 </Link>
               </nav>
             </div>
@@ -156,20 +151,15 @@ export function PageShell({
         </aside>
 
         <footer className="border-t border-border px-6 py-6 font-condensed text-xs uppercase tracking-widest text-muted-foreground lg:hidden">
-          <p>milliondollartshirt.lol</p>
-          <p className="mt-1">An internet experiment. Printed on one black shirt.</p>
-          <nav aria-label="Legal" className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
-            <Link href="/rules" className="hover:text-foreground">
-              Rules
-            </Link>
+          <nav aria-label="Legal" className="flex flex-wrap gap-x-4 gap-y-1">
             <Link href="/terms" className="hover:text-foreground">
               Terms
             </Link>
+            <Link href="/rules" className="hover:text-foreground">
+              Rules
+            </Link>
             <Link href="/privacy" className="hover:text-foreground">
               Privacy
-            </Link>
-            <Link href="/about" className="hover:text-foreground">
-              About
             </Link>
           </nav>
         </footer>

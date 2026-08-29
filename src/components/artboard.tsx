@@ -202,6 +202,7 @@ function TShirtPreview({
             width="201.6"
             height="20.16"
             preserveAspectRatio="xMidYMid meet"
+            opacity="0.1"
           />
         </svg>
 

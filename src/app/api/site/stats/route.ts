@@ -9,6 +9,7 @@ export async function GET() {
       {
         onlineCount: stats.onlineCount,
         visitorCount: stats.visitorCount,
+        clickCount: stats.clickCount,
       },
       {
         headers: {
